@@ -1,0 +1,13 @@
+{
+  "hosts": {
+    "vercel": "Vercel, code-harvest team",
+    "github": "GitHub, cwkoenigs",
+    "this-mac": "This Mac",
+    "pi": "Raspberry Pi, 192.168.1.249",
+    "old-mac": "Old MacBook Pro"
+  },
+  "stale_days": 30,
+  "check_timeout": 15,
+  "html_out": "~/Documents/life-admin/atlas.html",
+  "template": "~/Developer/dashboard-style/templates/dashboard.html"
+}
