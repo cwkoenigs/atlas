@@ -1,4 +1,4 @@
-"""atlas: what runs where, and why. The terminal interface, in the ds-next terminal design system.
+"""atlas: what runs where, and why. The terminal interface, built on ds-cli-design (the terminal design system).
 
 Every line is built with ui_style (roles, glyphs, the 80-column grid); widgets are framed because a
 frame means "needs you". Cards are addressed by their number on the map or a word from their name.
@@ -16,10 +16,11 @@ import time
 from rich.text import Text
 
 from . import core as A
-from . import ui_style as S
-from . import widgets as W
+from ds_cli_design import ui_style as S
+from ds_cli_design import widgets as W
+from ds_cli_design.ui_style import G, LABEL_W
+
 from .picker import browse
-from .ui_style import G, LABEL_W
 
 VERSION = "0.2"
 TTY = sys.stdout.isatty() and sys.stdin.isatty()

@@ -17,16 +17,19 @@ atlas help         # everything else
 
 You never type an id. Every command that takes a card (`open`, `check`, `confirm`, `promote`, `retire`, `personal`) takes a number from the map or a word from the card's name. `atlas` re-runs the checks when the last run is over 6 hours old; `atlas check` forces it. `--plain` prints without colour or widgets (also automatic when piped).
 
-The look is the ds-next terminal design system v1: `src/atlas_cli/ui_style.py` and `widgets.py` are copied from it (roles, glyphs, the 80-column grid, frames for anything that needs you, the dog-and-cat banner).
+The look comes from [ds-cli-design](https://github.com/cwkoenigs/ds-cli-design), the terminal design system (roles, glyphs, the 80-column grid, frames for anything that needs you, the dog-and-cat banner). Atlas imports it; it holds no colours or glyphs of its own.
 
 ## Install
 
 ```sh
-uv tool install --editable ~/Developer/atlas     # puts `atlas` in ~/.local/bin
+# with both repos checked out (changes to either show up at once):
+uv tool install --editable ~/Developer/atlas --with-editable ~/Developer/ds-cli-design --no-sources
+# with only atlas checked out (ds-cli-design comes from GitHub):
+uv tool install --editable ~/Developer/atlas
 cp ~/Developer/atlas/bin/atlas-shim /opt/homebrew/bin/atlas   # if ~/.local/bin is not on your PATH
 ```
 
-Editable means a `git pull` here updates the command. The cards stay in `~/Developer/atlas` (set `ATLAS_DIR` to use another folder).
+Editable means a `git pull` updates the command. The cards stay in `~/Developer/atlas` (set `ATLAS_DIR` to use another folder).
 
 ## After untangling something
 
@@ -96,8 +99,8 @@ Below the frontmatter: **Short version** (what to remember), **Untangled** (what
 | `*/personal/` | Personal cards | no |
 | `ATLAS.md` | The morning page, rebuilt by `atlas` and `atlas check` | no |
 | `atlas.json` | Places (hosts) and their names, the stale threshold, where the HTML page goes | yes |
-| `src/atlas_cli/` | The CLI: `core.py` (cards, checks, pages), `cli.py` (the terminal), `picker.py`, and the design system's `ui_style.py` and `widgets.py` | yes |
-| `pyproject.toml` | Package `atlas-map`, command `atlas`; needs rich and prompt_toolkit | yes |
+| `src/atlas_cli/` | The CLI: `core.py` (cards, checks, pages), `cli.py` (the terminal), `picker.py` (cards into the design system's picker) | yes |
+| `pyproject.toml` | Package `atlas-map`, command `atlas`; needs ds-cli-design | yes |
 | `.state/` | Last check results | no |
 
 On a new machine: clone to `~/Developer/atlas`, `uv tool install --editable ~/Developer/atlas`, run `atlas`. If `atlas.json`'s `template` path does not exist there, it builds only `ATLAS.md`.

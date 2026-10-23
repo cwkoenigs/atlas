@@ -1,9 +1,12 @@
 [project]
 name = "atlas-map"
 version = "0.2.0"
-description = "What runs where, and why: one checked card per thing, in the ds-next terminal design system"
+description = "What runs where, and why: one checked card per thing, built on ds-cli-design"
 requires-python = ">=3.10"
-dependencies = ["rich>=13", "prompt_toolkit>=3.0"]
+dependencies = ["ds-cli-design"]
+
+[tool.uv.sources]
+ds-cli-design = { git = "https://github.com/cwkoenigs/ds-cli-design" }
 
 [project.scripts]
 atlas = "atlas_cli.cli:main"
