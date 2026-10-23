@@ -54,7 +54,7 @@ atlas promote a-7e21c4      # inbox -> cards, once what/why/where are filled and
 
 | Command | Does |
 |---|---|
-| `atlas today [--no-check]` | Check everything, rebuild the pages, list what needs a look |
+| `atlas` | The map and the picker; checks again if the last run is over 6 h old |
 | `atlas new "Title" --kind K --host H` | Draft a card in `inbox/` (also `--where --what --why --source --entry --check --link --personal`) |
 | `atlas check [ID ...]` | Run checks |
 | `atlas promote ID` | Inbox to cards (refuses if a required field is empty or the check fails; `--force` for something known to be down) |
@@ -94,7 +94,7 @@ Below the frontmatter: **Short version** (what to remember), **Untangled** (what
 |---|---|---|
 | `cards/`, `inbox/`, `retired/` | The cards. The only thing you edit | yes |
 | `*/personal/` | Personal cards | no |
-| `ATLAS.md` | The morning page, built by `atlas today` | no |
+| `ATLAS.md` | The morning page, rebuilt by `atlas` and `atlas check` | no |
 | `atlas.json` | Places (hosts) and their names, the stale threshold, where the HTML page goes | yes |
 | `src/atlas_cli/` | The CLI: `core.py` (cards, checks, pages), `cli.py` (the terminal), `picker.py`, and the design system's `ui_style.py` and `widgets.py` | yes |
 | `pyproject.toml` | Package `atlas-map`, command `atlas`; needs rich and prompt_toolkit | yes |

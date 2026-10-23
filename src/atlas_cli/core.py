@@ -311,7 +311,7 @@ def build_html(cards, st):
   <div class="wrap">
     <p class="eyebrow">{e(str(ROOT).replace(str(HOME), "~"))}</p>
     <h1>Atlas</h1>
-    <p class="lead">What runs where, and why. Each card is a markdown file; run <code>atlas today</code> to re-check and rebuild.</p>
+    <p class="lead">What runs where, and why. Each card is a markdown file; run <code>atlas check</code> to re-check and rebuild.</p>
     <dl class="stats">{stats}</dl>
   </div>
 </section>
@@ -319,7 +319,7 @@ def build_html(cards, st):
 {banners}
 {chr(10).join(sections)}
 </main>
-<footer class="site"><div class="wrap">Built from <code>{e(str(ROOT / "cards").replace(str(HOME), "~"))}</code> by <code>atlas today</code>. Edit the cards, not this page.</div></footer>
+<footer class="site"><div class="wrap">Built from <code>{e(str(ROOT / "cards").replace(str(HOME), "~"))}</code> by <code>atlas check</code>. Edit the cards, not this page.</div></footer>
 </body>
 </html>
 """
