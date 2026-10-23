@@ -225,9 +225,10 @@ def cmd_check(args) -> None:
 def cmd_new(args) -> None:
     hosts = list(A.CFG["hosts"].items())
     kinds = ["site", "app", "service", "job", "repo", "folder", "domain", "device"]
-    if args.title and not TTY:
+    if args.title and (not TTY or args.kind):
         values = {"title": args.title, "kind": args.kind or "service", "host": args.host or hosts[0][0],
-                  "personal": "yes" if args.personal else "no"}
+                  "personal": "yes" if args.personal else "no", "links": args.link,
+                  **{k: getattr(args, k) for k in ("where", "what", "why", "source", "entry", "check")}}
     else:
         if not TTY:
             say_error("atlas new needs a terminal, or a title and flags", "atlas new \"Title\" --kind site --host vercel")
@@ -360,6 +361,9 @@ def parser() -> argparse.ArgumentParser:
     s = sub.add_parser("new", add_help=False)
     s.add_argument("title", nargs="?"); s.add_argument("--kind"); s.add_argument("--host")
     s.add_argument("--personal", action="store_true")
+    for k in ("where", "what", "why", "source", "entry", "check"):
+        s.add_argument(f"--{k}", default="")
+    s.add_argument("--link", action="append", default=[])
     for name in ("show", "promote", "confirm", "retire", "personal", "open"):
         s = sub.add_parser(name, add_help=False); s.add_argument("query", nargs="+")
         if name == "promote": s.add_argument("--force", action="store_true")
