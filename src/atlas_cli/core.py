@@ -1,27 +1,7 @@
-#!/usr/bin/env python3
-"""atlas: what runs where, and why. One markdown card per thing; one page to read each morning.
+"""atlas core: cards, checks, search, the generated pages. No terminal output here."""
+import datetime as dt, html, json, os, pathlib, re, secrets, shutil, subprocess, sys
 
-  atlas today [--no-check]          run every check, rebuild ATLAS.md and the HTML page, list what needs a look
-  atlas new "Title" --kind K --host H [--where .. --what .. --why .. --source .. --entry .. --check ..]
-                                    draft a card in inbox/ (prints its id)
-  atlas check [ID ...]              run checks (all active cards when no id)
-  atlas promote ID [--force]        inbox/ -> cards/ once what, why, where and a passing check are there
-  atlas personal ID [--undo]        keep a card on this Mac only (moves it to personal/, which git ignores)
-  atlas confirm ID                  stamp `confirmed:` with today (you re-read it and it is still true)
-  atlas retire ID [--reason TEXT]   cards/ -> retired/ (the thing is gone; the card keeps the history)
-  atlas show ID | atlas find TEXT   print cards compactly
-  atlas open ID [--edit]            open a card file (default app, or $EDITOR with --edit)
-  atlas page                        open the card page in the browser
-  atlas                             the whole map, numbered (re-checks if the last check is over 6 h old)
-  atlas 5 | atlas pi | atlas billing   read one card: by its number on the map, or any word in its name
-  atlas lint                        missing fields, unknown hosts, broken links, stale confirmations
-
-An ID is the card's id (a-1b2c3d) or its file name without .md. Cards are the source of truth;
-ATLAS.md and the HTML page are build products. Checks never change a card; results live in .state/.
-"""
-import argparse, datetime as dt, html, json, os, pathlib, re, secrets, shutil, subprocess, sys
-
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path(os.environ.get("ATLAS_DIR", pathlib.Path.home() / "Developer" / "atlas")).expanduser()
 CFG = json.loads((ROOT / "atlas.json").read_text())
 STATE = ROOT / ".state" / "checks.json"
 FOLDERS = {"inbox": "Draft", "cards": "Active", "retired": "Retired"}
@@ -42,7 +22,7 @@ def parse(path):
     text = path.read_text()
     m = re.match(r"---\n(.*?)\n---\n?(.*)", text, re.S)
     if not m:
-        raise SystemExit(f"{path}: no frontmatter")
+        raise ValueError(f"{path}: no frontmatter")
     meta = {}
     for line in m.group(1).splitlines():
         line = line.split("  #", 1)[0].rstrip() if "  #" in line else line.rstrip()
@@ -112,19 +92,31 @@ def search(query, cards=None):
     return [c for c in cards if all(w in c["_path"].read_text().lower() for w in words)]
 
 
+class NoMatch(Exception):
+    pass
+
+
+class Ambiguous(Exception):
+    def __init__(self, query, hits):
+        super().__init__(query)
+        self.query, self.hits = query, hits
+
+
+def numbers(cards):
+    """slug -> number on the map."""
+    return {c["_slug"]: i for i, c in enumerate(ordered(cards), 1)}
+
+
 def find(ident, cards=None):
-    """One card for a command, or a numbered list of candidates and exit."""
+    """Exactly one card, or NoMatch / Ambiguous (with the candidates)."""
     cards = cards if cards is not None else load()
     hits = search(ident, cards)
     if len(hits) == 1:
         return hits[0]
     if not hits:
-        raise SystemExit(f"Nothing matches {ident!r}. Type `atlas` to see everything.")
-    num = {id(c): i for i, c in enumerate(ordered(cards), 1)}
-    print(f"{len(hits)} cards match {ident!r}; pick one by number:")
-    for c in sorted(hits, key=lambda c: num.get(id(c), 999)):
-        print(f"  {num.get(id(c), '-'):>3}  {c['title']}")
-    raise SystemExit(f"e.g. atlas {min(num.get(id(c), 999) for c in hits)}")
+        raise NoMatch(ident)
+    num = numbers(cards)
+    raise Ambiguous(ident, sorted(hits, key=lambda c: num.get(c["_slug"], 999)))
 
 
 def slugify(t):
@@ -137,7 +129,8 @@ def state():
     return json.loads(STATE.read_text()) if STATE.is_file() else {}
 
 
-def run_checks(cards):
+def run_checks(cards, on_each=None):
+    """Run each card's check; on_each(card, ok, out) after each one. Results go to .state/checks.json."""
     st = state()
     for c in cards:
         cmd = c.get("check", "")
@@ -151,7 +144,8 @@ def run_checks(cards):
             ok, out = False, f"timed out after {CFG.get('check_timeout', 15)}s"
         st[c["id"]] = {"ok": ok, "at": dt.datetime.now().isoformat(timespec="minutes"),
                        "out": out.splitlines()[-1][:200] if out else ""}
-        print(f"  {'ok  ' if ok else 'FAIL'} {c['id']}  {c['title']}" + ("" if ok else f"  ({st[c['id']]['out'] or 'exit != 0'})"))
+        if on_each:
+            on_each(c, ok, st[c["id"]]["out"])
     STATE.parent.mkdir(exist_ok=True)
     STATE.write_text(json.dumps(st, indent=1) + "\n")
     return st
@@ -186,15 +180,15 @@ def attention(cards, st):
         why, rank = [], 9
         res = st.get(c.get("id"))
         if res and not res["ok"]:
-            why.append(f"check failing: {res['out'] or 'exit status not 0'}"); rank = 0
+            why.append("not ok" + (f": {res['out']}" if res["out"] else ", its check fails")); rank = 0
         if s == "draft":
-            why.append(f"draft in inbox; finish it, then `atlas promote {c['id']}`"); rank = min(rank, 1)
+            why.append("new, not confirmed yet"); rank = min(rank, 1)
         elif s == "none":
             why.append("no passing check yet"); rank = min(rank, 2)
         if c["_folder"] == "cards" and c.get("confidence") == "guess":
-            why.append("confidence is a guess; confirm or correct it"); rank = min(rank, 3)
+            why.append("still a guess"); rank = min(rank, 3)
         elif c["_folder"] == "cards" and stale(c):
-            why.append(f"not confirmed since {c.get('confirmed') or 'ever'}; re-read it, then `atlas confirm {c['id']}`")
+            why.append(f"not confirmed since {c.get('confirmed') or 'ever'}")
             rank = min(rank, 4)
         if why:
             rows[c["id"]] = (rank, c, "; ".join(why))
@@ -217,7 +211,7 @@ def build_md(cards, st):
     now = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
     L = ["# Atlas", "",
          "What runs where, and why. One card per thing in `cards/`; this page is built from them.", "",
-         f"_Updated {now} by `atlas today`. Edit the cards, not this file._", "",
+         f"_Updated {now} by `atlas check`. Edit the cards, not this file._", "",
          f"{len(active) - counts['draft']} cards: {counts['ok']} OK, {counts['fail']} failing, "
          f"{counts['none']} without a passing check. {counts['draft']} draft(s) in the inbox.", ""]
     att = attention(active, st)
@@ -333,68 +327,7 @@ def build_html(cards, st):
     return out
 
 
-# ---------- commands ----------
-
-def cmd_today(a):
-    cards = load()
-    active = [c for c in cards if c["_folder"] != "retired"]
-    st = state() if a.no_check else (print("checking:") or run_checks(active))
-    build_md(cards, st)
-    page = build_html(cards, st)
-    att = attention(active, st)
-    print(f"\nATLAS.md rebuilt{' and ' + str(page).replace(str(HOME), '~') if page else ''}.")
-    print(f"{len(att)} thing(s) need a look:" if att else "Nothing needs a look.")
-    for _, c, why in att:
-        print(f"  {c['id']}  {c['title']}: {why}")
-
-
-def cmd_new(a):
-    cid = "a-" + secrets.token_hex(3)
-    slug = slugify(a.title)
-    path = ROOT / "inbox" / ("personal" if a.personal else "") / f"{slug}.md"
-    path.parent.mkdir(exist_ok=True)
-    if any(c["_slug"] == slug for c in load()):
-        raise SystemExit(f"a card named {slug} already exists")
-    if a.host not in CFG["hosts"]:
-        print(f"note: host {a.host!r} is new; add it to atlas.json hosts to give it a readable name")
-    tpl = parse(ROOT / "templates" / "card.md")
-    card = {k: tpl.get(k, "") for k in FIELDS}
-    card.update(id=cid, title=a.title, kind=a.kind, host=a.host, confidence=a.confidence,
-                confirmed="", links=a.link or [], notes=[])
-    for k in ("where", "what", "why", "source", "entry", "check"):
-        if getattr(a, k):
-            card[k] = getattr(a, k)
-    card["_body"] = tpl["_body"]
-    path.write_text(dump(card))
-    print(f"{cid}  {path.relative_to(ROOT)}")
-
-
-def cmd_check(a):
-    cards = [c for c in load(("inbox", "cards"))]
-    if a.ids:
-        cards = [find(i, cards) for i in a.ids]
-    run_checks(cards)
-
-
-def cmd_promote(a):
-    c = find(a.id)
-    if c["_folder"] != "inbox":
-        raise SystemExit(f"{c['id']} is in {c['_folder']}/, not inbox/")
-    missing = [k for k in REQUIRED if not c.get(k)]
-    st = run_checks([c]) if c.get("check") else state()
-    if not a.force:
-        if missing:
-            raise SystemExit(f"fill these first: {', '.join(missing)}")
-        if not st.get(c["id"], {}).get("ok"):
-            raise SystemExit("its check does not pass; fix the card or the check (or --force for something known to be down)")
-    c["confirmed"] = TODAY.isoformat()
-    if c.get("confidence") in ("", "guess") and not missing:
-        c["confidence"] = "confirmed"
-    dest = place(c, "cards")
-    dest.write_text(dump(c))
-    c["_path"].unlink()
-    print(f"promoted {c['id']} -> {dest.relative_to(ROOT)}")
-
+# ---------- operations (no printing; the CLI presents the results) ----------
 
 def place(c, folder):
     """Where a card goes in `folder`, keeping it personal (out of git) if it was."""
@@ -403,143 +336,66 @@ def place(c, folder):
     return d / c["_path"].name
 
 
-def cmd_personal(a):
-    """Move a card into or out of its folder's personal/ subfolder (personal/ is not in git)."""
-    c = find(a.id)
-    want = not a.undo
-    if c["_personal"] == want:
-        print(f"{c['id']} is already {'personal' if want else 'shared'}"); return
-    c["_personal"] = want
-    dest = place(c, c["_folder"])
-    c["_path"].rename(dest)
-    print(f"{c['id']} -> {dest.relative_to(ROOT)} ({'this Mac only' if want else 'in git'})")
+def new_card(title, kind, host, personal=False, confidence="believed", **fields):
+    slug = slugify(title)
+    if any(c["_slug"] == slug for c in load()):
+        raise ValueError(f"a card named {slug} already exists")
+    path = ROOT / "inbox" / ("personal" if personal else "") / f"{slug}.md"
+    path.parent.mkdir(exist_ok=True)
+    tpl = parse(ROOT / "templates" / "card.md")
+    card = {k: tpl.get(k, "") for k in FIELDS}
+    card.update(id="a-" + secrets.token_hex(3), title=title, kind=kind, host=host, confidence=confidence,
+                confirmed="", links=fields.pop("links", []) or [], notes=[])
+    card.update({k: v for k, v in fields.items() if v})
+    card["_body"] = tpl["_body"]
+    path.write_text(dump(card))
+    return parse(path)
 
 
-def cmd_confirm(a):
-    c = find(a.id)
+def promote(c, force=False):
+    """inbox -> cards. Returns (dest, problem); problem is None on success."""
+    if c["_folder"] != "inbox":
+        return None, f"it is already in {c['_folder']}/"
+    missing = [k for k in REQUIRED if not c.get(k)]
+    st = run_checks([c]) if c.get("check") else state()
+    if not force:
+        if missing:
+            return None, "fill these first: " + ", ".join(missing)
+        if not st.get(c["id"], {}).get("ok"):
+            return None, "its check does not pass yet"
+    c["confirmed"] = TODAY.isoformat()
+    if c.get("confidence") in ("", "guess") and not missing:
+        c["confidence"] = "confirmed"
+    dest = place(c, "cards")
+    dest.write_text(dump(c))
+    c["_path"].unlink()
+    return dest, None
+
+
+def confirm(c):
     c["confirmed"] = TODAY.isoformat()
     c["_path"].write_text(dump(c))
-    print(f"{c['id']} confirmed {c['confirmed']}")
 
 
-def cmd_retire(a):
-    c = find(a.id)
+def retire(c, reason=""):
     c["retired"] = TODAY.isoformat()
-    c["retired_reason"] = a.reason or ""
+    c["retired_reason"] = reason
     dest = place(c, "retired")
     dest.write_text(dump(c))
     c["_path"].unlink()
-    print(f"retired {c['id']} -> {dest.relative_to(ROOT)}")
+    return dest
 
 
-def short_version(c):
-    m = re.search(r"## Short version\n(.*?)(?=\n## |\Z)", c["_body"], re.S)
-    text = " ".join(m.group(1).split()) if m else ""
-    text = text.replace("**", "")
-    return "" if text.startswith("Two or three lines") else text
+def set_personal(c, want=True):
+    if c["_personal"] == want:
+        return None
+    c["_personal"] = want
+    dest = place(c, c["_folder"])
+    c["_path"].rename(dest)
+    return dest
 
 
-def show(c, st, cards=None):
-    import textwrap
-    cards = cards if cards is not None else load()
-    word, _ = status(c, st)
-    res = st.get(c.get("id"))
-    wrap = lambda label, text: print(textwrap.fill(text, 96, initial_indent=f"  {label:<12}", subsequent_indent=" " * 14,
-                                                   break_on_hyphens=False, break_long_words=False))
-    print(f"\n  {c['title'].upper()}")
-    print(f"  {c.get('kind', '')} · {host_name(c.get('host', ''))} · {word}"
-          + (" · personal (this Mac only)" if c["_personal"] else "") + "\n")
-    if short_version(c):
-        wrap("", short_version(c)); print()
-    for label, k in (("Where", "where"), ("What", "what"), ("Why", "why"), ("Edit it at", "source"), ("Get to it", "entry")):
-        if c.get(k):
-            wrap(label, c[k])
-    if res:
-        wrap("Last check", ("passed" if res["ok"] else "FAILED" + (f": {res['out']}" if res["out"] else ", the card is not true right now"))
-             + f" ({ago(res['at'])})")
-    idx = {x.get("id"): x for x in cards} | {x["_slug"]: x for x in cards}
-    rel = [idx[l]["title"] for l in c.get("links", []) if l in idx]
-    if rel:
-        wrap("Related", ", ".join(rel))
-    n = {x["_slug"]: i for i, x in enumerate(ordered(cards), 1)}.get(c["_slug"], c["_slug"])
-    print(f"\n  The whole card, with how it was untangled: atlas open {n}\n")
-
-
-def cmd_show(a):
-    show(find(a.id), state())
-
-
-def ago(iso):
-    try:
-        mins = int((dt.datetime.now() - dt.datetime.fromisoformat(iso)).total_seconds() // 60)
-    except (TypeError, ValueError):
-        return "never"
-    return f"{mins} min ago" if mins < 90 else f"{mins // 60} h ago" if mins < 48 * 60 else f"{mins // 1440} days ago"
-
-
-def clip(text, n):
-    return text if len(text) <= n else text[: n].rsplit(" ", 1)[0].rstrip(",;:") + "…"
-
-
-def cmd_map(a=None):
-    """Bare `atlas`: the whole map, numbered, needs-a-look first. Re-checks when the last check is old."""
-    cards = load()
-    st = state()
-    last = max((v["at"] for v in st.values()), default=None)
-    fresh = last and (dt.datetime.now() - dt.datetime.fromisoformat(last)).total_seconds() < 6 * 3600
-    if not fresh:
-        print("Checking everything (last check was " + ago(last) + ")...")
-        st = run_checks([c for c in cards if c["_folder"] != "retired"])
-        build_md(cards, st); build_html(cards, st)
-        last = max(v["at"] for v in st.values())
-    lst = ordered(cards)
-    num = {id(c): i for i, c in enumerate(lst, 1)}
-    W = max(len(c["title"]) for c in lst) + 2
-    line = lambda c, note: print(f"  {num[id(c)]:>3}  {c['title']:<{W}}{note}")
-    print(f"\nATLAS · {len(lst)} things · checked {ago(last)}\n")
-    att = attention(lst, st)
-    if att:
-        print("NEEDS A LOOK")
-        for _, c, why in att:
-            first = why.split(";")[0]
-            if first.startswith("check failing"):
-                detail = first.removeprefix("check failing: ").removeprefix("exit status not 0")
-                first = "not OK" + (f": {detail}" if detail else ", the card's check fails")
-            elif first.startswith("draft"):
-                first = "new, not confirmed yet"
-            line(c, clip(first, 70))
-        print()
-    host = None
-    for c in lst:
-        if c.get("host") != host:
-            host = c.get("host")
-            print(host_name(host).upper())
-        word, s_ = status(c, st)
-        mark = {"ok": "ok  ", "fail": "FAIL", "draft": "new ", "none": " -  "}.get(s_, "    ")
-        line(c, f"{mark}  {clip(c.get('what', ''), 62)}")
-    print("\natlas <number> or atlas <word> to read one (e.g. atlas 1, atlas pi)   ·   atlas help for the rest\n")
-
-
-def cmd_find(a):
-    q, st = a.text.lower(), state()
-    hits = [c for c in load() if q in (c["_path"].read_text().lower())]
-    for c in hits:
-        show(c, st)
-        print()
-    if not hits:
-        print("nothing found")
-
-
-def cmd_open(a):
-    """Open a card in the default app for markdown files (or $EDITOR with --edit)."""
-    c = find(a.id)
-    if a.edit and os.environ.get("EDITOR"):
-        os.execvp(os.environ["EDITOR"], [os.environ["EDITOR"], str(c["_path"])])
-    subprocess.run(["open", str(c["_path"])])
-    print(f"opened {c['_path'].relative_to(ROOT)}")
-
-
-def cmd_lint(a):
+def lint():
     cards, problems = load(), []
     ids = {c.get("id") for c in cards} | {c["_slug"] for c in cards}
     seen = {}
@@ -555,44 +411,39 @@ def cmd_lint(a):
         if c.get("host") and c["host"] not in CFG["hosts"]:
             problems.append(f"{where}: host {c['host']!r} is not in atlas.json")
         problems += [f"{where}: link {l!r} matches no card" for l in c.get("links", []) if l not in ids]
-    print("\n".join(problems) if problems else f"ok: {len(cards)} cards")
-    sys.exit(1 if problems else 0)
+    return cards, problems
 
 
-def main():
-    p = argparse.ArgumentParser(prog="atlas", description=__doc__.split("\n")[0])
-    sub = p.add_subparsers(dest="cmd", required=True)
-    s = sub.add_parser("today"); s.add_argument("--no-check", action="store_true"); s.set_defaults(f=cmd_today)
-    s = sub.add_parser("new"); s.add_argument("title"); s.add_argument("--kind", required=True)
-    s.add_argument("--host", required=True); s.add_argument("--confidence", default="believed")
-    for k in ("where", "what", "why", "source", "entry", "check"):
-        s.add_argument(f"--{k}")
-    s.add_argument("--link", action="append")
-    s.add_argument("--personal", action="store_true", help="keep this card on this Mac only (not in git)")
-    s.set_defaults(f=cmd_new)
-    s = sub.add_parser("personal"); s.add_argument("id"); s.add_argument("--undo", action="store_true"); s.set_defaults(f=cmd_personal)
-    s = sub.add_parser("check"); s.add_argument("ids", nargs="*"); s.set_defaults(f=cmd_check)
-    s = sub.add_parser("promote"); s.add_argument("id"); s.add_argument("--force", action="store_true"); s.set_defaults(f=cmd_promote)
-    s = sub.add_parser("confirm"); s.add_argument("id"); s.set_defaults(f=cmd_confirm)
-    s = sub.add_parser("retire"); s.add_argument("id"); s.add_argument("--reason"); s.set_defaults(f=cmd_retire)
-    s = sub.add_parser("show"); s.add_argument("id"); s.set_defaults(f=cmd_show)
-    s = sub.add_parser("find"); s.add_argument("text"); s.set_defaults(f=cmd_find)
-    s = sub.add_parser("lint"); s.set_defaults(f=cmd_lint)
-    s = sub.add_parser("open"); s.add_argument("id"); s.add_argument("--edit", action="store_true"); s.set_defaults(f=cmd_open)
-    argv = sys.argv[1:]
-    if not argv:                              # bare `atlas`: the numbered map
-        return cmd_map()
-    if argv[0] == "help":
-        argv = ["--help"]
-    if argv[0] not in sub.choices and not argv[0].startswith("-") and argv[0] not in ("page", "html"):
-        query = " ".join(argv)                # `atlas 5`, `atlas pi`, `atlas billing site`
-        return show(find(query), state())
-    if argv[0] in ("page", "html"):           # `atlas page`: open the card page in the browser
-        page = expand(CFG.get("html_out", ""))
-        subprocess.run(["open", str(page if page.is_file() else ROOT / "ATLAS.md")]); return
-    a = p.parse_args(argv)
-    a.f(a)
+def short_version(c):
+    m = re.search(r"## Short version\n(.*?)(?=\n## |\Z)", c["_body"], re.S)
+    text = " ".join(m.group(1).split()) if m else ""
+    text = text.replace("**", "").replace("`", "")
+    return "" if text.startswith("Two or three lines") else text
 
 
-if __name__ == "__main__":
-    main()
+def ago(iso):
+    try:
+        mins = int((dt.datetime.now() - dt.datetime.fromisoformat(iso)).total_seconds() // 60)
+    except (TypeError, ValueError):
+        return "never"
+    return f"{mins} min ago" if mins < 90 else f"{mins // 60} h ago" if mins < 48 * 60 else f"{mins // 1440} days ago"
+
+
+def last_checked(st):
+    return max((v["at"] for v in st.values()), default=None)
+
+
+def fresh(st, hours=6):
+    last = last_checked(st)
+    return bool(last) and (dt.datetime.now() - dt.datetime.fromisoformat(last)).total_seconds() < hours * 3600
+
+
+def clip(text, n):
+    return text if len(text) <= n else text[:n].rsplit(" ", 1)[0].rstrip(",;:") + "…"
+
+
+def rebuild(cards=None, st=None):
+    cards = cards if cards is not None else load()
+    st = st if st is not None else state()
+    build_md(cards, st)
+    return build_html(cards, st)

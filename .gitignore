@@ -2,3 +2,6 @@
 .DS_Store
 */personal/
 /ATLAS.md
+__pycache__/
+*.egg-info/
+.venv/

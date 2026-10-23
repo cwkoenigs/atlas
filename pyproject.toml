@@ -1,0 +1,16 @@
+[project]
+name = "atlas-map"
+version = "0.2.0"
+description = "What runs where, and why: one checked card per thing, in the ds-next terminal design system"
+requires-python = ">=3.10"
+dependencies = ["rich>=13", "prompt_toolkit>=3.0"]
+
+[project.scripts]
+atlas = "atlas_cli.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/atlas_cli"]

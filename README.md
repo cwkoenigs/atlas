@@ -7,17 +7,26 @@ Atlas never moves anything. It records where a thing already is, so an hour spen
 ## Using it
 
 ```sh
-atlas              # the whole map, numbered, with what needs a look at the top
+atlas              # the map, then a picker: type to filter, arrows to move, Enter opens, Esc quits
 atlas 2            # read card 2
-atlas pi           # read the card with "pi" in its name (or pick from a numbered list)
+atlas pi           # read the card with "pi" in its name (a picker if several match)
 atlas open 2       # open card 2's file, with the full untangle story
+atlas new          # a form to draft a card
+atlas help         # everything else
 ```
 
-You never type an id. Every command that takes a card (`open`, `confirm`, `retire`, `personal`, `promote`) takes a number from the map or a word from the card's name. `atlas` re-runs the checks when the last run is over 6 hours old; `atlas check` forces it.
+You never type an id. Every command that takes a card (`open`, `check`, `confirm`, `promote`, `retire`, `personal`) takes a number from the map or a word from the card's name. `atlas` re-runs the checks when the last run is over 6 hours old; `atlas check` forces it. `--plain` prints without colour or widgets (also automatic when piped).
 
-The shim in `/opt/homebrew/bin/atlas` runs `~/Developer/atlas/bin/atlas`. On a new Mac, copy `bin/atlas-shim` there.
+The look is the ds-next terminal design system v1: `src/atlas_cli/ui_style.py` and `widgets.py` are copied from it (roles, glyphs, the 80-column grid, frames for anything that needs you, the dog-and-cat banner).
 
-Runs every card's check, rebuilds `ATLAS.md` (and, on Clark's Mac, the Atlas page on the life-admin hub), and prints what needs a look: failing checks first, then drafts in the inbox, then guesses and cards not confirmed in 30 days.
+## Install
+
+```sh
+uv tool install --editable ~/Developer/atlas     # puts `atlas` in ~/.local/bin
+cp ~/Developer/atlas/bin/atlas-shim /opt/homebrew/bin/atlas   # if ~/.local/bin is not on your PATH
+```
+
+Editable means a `git pull` here updates the command. The cards stay in `~/Developer/atlas` (set `ATLAS_DIR` to use another folder).
 
 ## After untangling something
 
@@ -87,7 +96,8 @@ Below the frontmatter: **Short version** (what to remember), **Untangled** (what
 | `*/personal/` | Personal cards | no |
 | `ATLAS.md` | The morning page, built by `atlas today` | no |
 | `atlas.json` | Places (hosts) and their names, the stale threshold, where the HTML page goes | yes |
-| `bin/atlas` | The CLI. Python 3, no dependencies | yes |
+| `src/atlas_cli/` | The CLI: `core.py` (cards, checks, pages), `cli.py` (the terminal), `picker.py`, and the design system's `ui_style.py` and `widgets.py` | yes |
+| `pyproject.toml` | Package `atlas-map`, command `atlas`; needs rich and prompt_toolkit | yes |
 | `.state/` | Last check results | no |
 
-On a new machine: clone to `~/Developer/atlas`, run `bin/atlas today`. If `atlas.json`'s `template` path does not exist there, it builds only `ATLAS.md`.
+On a new machine: clone to `~/Developer/atlas`, `uv tool install --editable ~/Developer/atlas`, run `atlas`. If `atlas.json`'s `template` path does not exist there, it builds only `ATLAS.md`.
