@@ -7,8 +7,10 @@ Atlas never moves anything. It records where a thing already is, so an hour spen
 ## Every morning
 
 ```sh
-~/Developer/atlas/bin/atlas today
+atlas
 ```
+
+(`atlas` with no arguments is `atlas today`. The shim in `/opt/homebrew/bin/atlas` runs `~/Developer/atlas/bin/atlas`; on a new Mac, copy it there or call `bin/atlas` directly.)
 
 Runs every card's check, rebuilds `ATLAS.md` (and, on Clark's Mac, the Atlas page on the life-admin hub), and prints what needs a look: failing checks first, then drafts in the inbox, then guesses and cards not confirmed in 30 days.
 
@@ -46,6 +48,8 @@ atlas promote a-7e21c4      # inbox -> cards, once what/why/where are filled and
 | `atlas retire ID --reason TEXT` | Cards to retired |
 | `atlas personal ID [--undo]` | Keep a card on this Mac only, or share it again |
 | `atlas show ID`, `atlas find TEXT` | Read cards in the terminal |
+| `atlas open ID [--edit]` | Open a card file in its app (or `$EDITOR`) |
+| `atlas page` | Open the card page in the browser |
 | `atlas lint` | Missing fields, unknown hosts, links to nothing |
 
 An ID is the card's id (`a-7e21c4`) or its file name.

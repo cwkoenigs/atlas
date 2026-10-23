@@ -1,0 +1,3 @@
+#!/bin/sh
+# Shim for Clark's atlas: the real CLI lives in ~/Developer/atlas (cwkoenigs/atlas).
+exec /usr/bin/python3 "$HOME/Developer/atlas/bin/atlas" "$@"

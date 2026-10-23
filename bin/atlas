@@ -10,6 +10,9 @@
   atlas confirm ID                  stamp `confirmed:` with today (you re-read it and it is still true)
   atlas retire ID [--reason TEXT]   cards/ -> retired/ (the thing is gone; the card keeps the history)
   atlas show ID | atlas find TEXT   print cards compactly
+  atlas open ID [--edit]            open a card file (default app, or $EDITOR with --edit)
+  atlas page                        open the card page in the browser
+  atlas                             same as `atlas today`
   atlas lint                        missing fields, unknown hosts, broken links, stale confirmations
 
 An ID is the card's id (a-1b2c3d) or its file name without .md. Cards are the source of truth;
@@ -421,6 +424,15 @@ def cmd_find(a):
         print("nothing found")
 
 
+def cmd_open(a):
+    """Open a card in the default app for markdown files (or $EDITOR with --edit)."""
+    c = find(a.id)
+    if a.edit and os.environ.get("EDITOR"):
+        os.execvp(os.environ["EDITOR"], [os.environ["EDITOR"], str(c["_path"])])
+    subprocess.run(["open", str(c["_path"])])
+    print(f"opened {c['_path'].relative_to(ROOT)}")
+
+
 def cmd_lint(a):
     cards, problems = load(), []
     ids = {c.get("id") for c in cards} | {c["_slug"] for c in cards}
@@ -460,7 +472,12 @@ def main():
     s = sub.add_parser("show"); s.add_argument("id"); s.set_defaults(f=cmd_show)
     s = sub.add_parser("find"); s.add_argument("text"); s.set_defaults(f=cmd_find)
     s = sub.add_parser("lint"); s.set_defaults(f=cmd_lint)
-    a = p.parse_args()
+    s = sub.add_parser("open"); s.add_argument("id"); s.add_argument("--edit", action="store_true"); s.set_defaults(f=cmd_open)
+    argv = sys.argv[1:] or ["today"]          # bare `atlas` = the morning check
+    if argv[0] in ("page", "html"):           # `atlas page`: open the card page in the browser
+        page = expand(CFG.get("html_out", ""))
+        subprocess.run(["open", str(page if page.is_file() else ROOT / "ATLAS.md")]); return
+    a = p.parse_args(argv)
     a.f(a)
 
 
