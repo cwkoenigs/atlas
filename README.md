@@ -4,13 +4,18 @@ What runs where, and why. One markdown card per thing (a site, a job, a repo, a 
 
 Atlas never moves anything. It records where a thing already is, so an hour spent untangling it is not spent twice.
 
-## Every morning
+## Using it
 
 ```sh
-atlas
+atlas              # the whole map, numbered, with what needs a look at the top
+atlas 2            # read card 2
+atlas pi           # read the card with "pi" in its name (or pick from a numbered list)
+atlas open 2       # open card 2's file, with the full untangle story
 ```
 
-(`atlas` with no arguments is `atlas today`. The shim in `/opt/homebrew/bin/atlas` runs `~/Developer/atlas/bin/atlas`; on a new Mac, copy it there or call `bin/atlas` directly.)
+You never type an id. Every command that takes a card (`open`, `confirm`, `retire`, `personal`, `promote`) takes a number from the map or a word from the card's name. `atlas` re-runs the checks when the last run is over 6 hours old; `atlas check` forces it.
+
+The shim in `/opt/homebrew/bin/atlas` runs `~/Developer/atlas/bin/atlas`. On a new Mac, copy `bin/atlas-shim` there.
 
 Runs every card's check, rebuilds `ATLAS.md` (and, on Clark's Mac, the Atlas page on the life-admin hub), and prints what needs a look: failing checks first, then drafts in the inbox, then guesses and cards not confirmed in 30 days.
 
@@ -52,7 +57,7 @@ atlas promote a-7e21c4      # inbox -> cards, once what/why/where are filled and
 | `atlas page` | Open the card page in the browser |
 | `atlas lint` | Missing fields, unknown hosts, links to nothing |
 
-An ID is the card's id (`a-7e21c4`) or its file name.
+ID can be the number from the map, any word from the card's name, its file name, or its id.
 
 ## A card
 

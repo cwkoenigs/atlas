@@ -12,7 +12,8 @@
   atlas show ID | atlas find TEXT   print cards compactly
   atlas open ID [--edit]            open a card file (default app, or $EDITOR with --edit)
   atlas page                        open the card page in the browser
-  atlas                             same as `atlas today`
+  atlas                             the whole map, numbered (re-checks if the last check is over 6 h old)
+  atlas 5 | atlas pi | atlas billing   read one card: by its number on the map, or any word in its name
   atlas lint                        missing fields, unknown hosts, broken links, stale confirmations
 
 An ID is the card's id (a-1b2c3d) or its file name without .md. Cards are the source of truth;
@@ -85,12 +86,45 @@ def load(folders=("inbox", "cards", "retired")):
     return cards
 
 
-def find(ident, cards=None):
+def ordered(cards):
+    """Every card in map order: by place, then title; drafts after active cards. Numbers come from here."""
+    hosts = list(CFG["hosts"])
+    rank = lambda h: hosts.index(h) if h in hosts else len(hosts)
+    return sorted([c for c in cards if c["_folder"] != "retired"],
+                  key=lambda c: (rank(c.get("host", "")), c.get("host", ""), c["_folder"] == "inbox", c["title"].lower()))
+
+
+def search(query, cards=None):
+    """Cards matching a number from the map, an id or file name, or words in the title (then anywhere)."""
     cards = cards if cards is not None else load()
-    hits = [c for c in cards if ident in (c.get("id"), c["_slug"])]
+    q = query.strip().lower()
+    if q.isdigit():
+        lst = ordered(cards)
+        n = int(q)
+        return [lst[n - 1]] if 1 <= n <= len(lst) else []
+    exact = [c for c in cards if q in (c.get("id", "").lower(), c["_slug"])]
+    if exact:
+        return exact
+    words = q.split()
+    title = [c for c in cards if all(w in (c["title"] + " " + c["_slug"]).lower() for w in words)]
+    if title:
+        return title
+    return [c for c in cards if all(w in c["_path"].read_text().lower() for w in words)]
+
+
+def find(ident, cards=None):
+    """One card for a command, or a numbered list of candidates and exit."""
+    cards = cards if cards is not None else load()
+    hits = search(ident, cards)
+    if len(hits) == 1:
+        return hits[0]
     if not hits:
-        raise SystemExit(f"no card {ident!r}. Try: atlas find {ident}")
-    return hits[0]
+        raise SystemExit(f"Nothing matches {ident!r}. Type `atlas` to see everything.")
+    num = {id(c): i for i, c in enumerate(ordered(cards), 1)}
+    print(f"{len(hits)} cards match {ident!r}; pick one by number:")
+    for c in sorted(hits, key=lambda c: num.get(id(c), 999)):
+        print(f"  {num.get(id(c), '-'):>3}  {c['title']}")
+    raise SystemExit(f"e.g. atlas {min(num.get(id(c), 999) for c in hits)}")
 
 
 def slugify(t):
@@ -398,20 +432,92 @@ def cmd_retire(a):
     print(f"retired {c['id']} -> {dest.relative_to(ROOT)}")
 
 
-def show(c, st):
+def short_version(c):
+    m = re.search(r"## Short version\n(.*?)(?=\n## |\Z)", c["_body"], re.S)
+    text = " ".join(m.group(1).split()) if m else ""
+    text = text.replace("**", "")
+    return "" if text.startswith("Two or three lines") else text
+
+
+def show(c, st, cards=None):
+    import textwrap
+    cards = cards if cards is not None else load()
     word, _ = status(c, st)
-    print(f"{c['id']}  {c['title']}  [{c.get('kind')} · {host_name(c.get('host', ''))} · {word}"
-          f"{' · personal' if c['_personal'] else ''}]")
-    for k in ("where", "what", "why", "source", "entry", "check"):
+    res = st.get(c.get("id"))
+    wrap = lambda label, text: print(textwrap.fill(text, 96, initial_indent=f"  {label:<12}", subsequent_indent=" " * 14,
+                                                   break_on_hyphens=False, break_long_words=False))
+    print(f"\n  {c['title'].upper()}")
+    print(f"  {c.get('kind', '')} · {host_name(c.get('host', ''))} · {word}"
+          + (" · personal (this Mac only)" if c["_personal"] else "") + "\n")
+    if short_version(c):
+        wrap("", short_version(c)); print()
+    for label, k in (("Where", "where"), ("What", "what"), ("Why", "why"), ("Edit it at", "source"), ("Get to it", "entry")):
         if c.get(k):
-            print(f"  {k:<7} {c[k]}")
-    if c.get("links"):
-        print(f"  links   {', '.join(c['links'])}")
-    print(f"  file    {c['_path'].relative_to(ROOT)}")
+            wrap(label, c[k])
+    if res:
+        wrap("Last check", ("passed" if res["ok"] else "FAILED" + (f": {res['out']}" if res["out"] else ", the card is not true right now"))
+             + f" ({ago(res['at'])})")
+    idx = {x.get("id"): x for x in cards} | {x["_slug"]: x for x in cards}
+    rel = [idx[l]["title"] for l in c.get("links", []) if l in idx]
+    if rel:
+        wrap("Related", ", ".join(rel))
+    n = {x["_slug"]: i for i, x in enumerate(ordered(cards), 1)}.get(c["_slug"], c["_slug"])
+    print(f"\n  The whole card, with how it was untangled: atlas open {n}\n")
 
 
 def cmd_show(a):
     show(find(a.id), state())
+
+
+def ago(iso):
+    try:
+        mins = int((dt.datetime.now() - dt.datetime.fromisoformat(iso)).total_seconds() // 60)
+    except (TypeError, ValueError):
+        return "never"
+    return f"{mins} min ago" if mins < 90 else f"{mins // 60} h ago" if mins < 48 * 60 else f"{mins // 1440} days ago"
+
+
+def clip(text, n):
+    return text if len(text) <= n else text[: n].rsplit(" ", 1)[0].rstrip(",;:") + "…"
+
+
+def cmd_map(a=None):
+    """Bare `atlas`: the whole map, numbered, needs-a-look first. Re-checks when the last check is old."""
+    cards = load()
+    st = state()
+    last = max((v["at"] for v in st.values()), default=None)
+    fresh = last and (dt.datetime.now() - dt.datetime.fromisoformat(last)).total_seconds() < 6 * 3600
+    if not fresh:
+        print("Checking everything (last check was " + ago(last) + ")...")
+        st = run_checks([c for c in cards if c["_folder"] != "retired"])
+        build_md(cards, st); build_html(cards, st)
+        last = max(v["at"] for v in st.values())
+    lst = ordered(cards)
+    num = {id(c): i for i, c in enumerate(lst, 1)}
+    W = max(len(c["title"]) for c in lst) + 2
+    line = lambda c, note: print(f"  {num[id(c)]:>3}  {c['title']:<{W}}{note}")
+    print(f"\nATLAS · {len(lst)} things · checked {ago(last)}\n")
+    att = attention(lst, st)
+    if att:
+        print("NEEDS A LOOK")
+        for _, c, why in att:
+            first = why.split(";")[0]
+            if first.startswith("check failing"):
+                detail = first.removeprefix("check failing: ").removeprefix("exit status not 0")
+                first = "not OK" + (f": {detail}" if detail else ", the card's check fails")
+            elif first.startswith("draft"):
+                first = "new, not confirmed yet"
+            line(c, clip(first, 70))
+        print()
+    host = None
+    for c in lst:
+        if c.get("host") != host:
+            host = c.get("host")
+            print(host_name(host).upper())
+        word, s_ = status(c, st)
+        mark = {"ok": "ok  ", "fail": "FAIL", "draft": "new ", "none": " -  "}.get(s_, "    ")
+        line(c, f"{mark}  {clip(c.get('what', ''), 62)}")
+    print("\natlas <number> or atlas <word> to read one (e.g. atlas 1, atlas pi)   ·   atlas help for the rest\n")
 
 
 def cmd_find(a):
@@ -473,7 +579,14 @@ def main():
     s = sub.add_parser("find"); s.add_argument("text"); s.set_defaults(f=cmd_find)
     s = sub.add_parser("lint"); s.set_defaults(f=cmd_lint)
     s = sub.add_parser("open"); s.add_argument("id"); s.add_argument("--edit", action="store_true"); s.set_defaults(f=cmd_open)
-    argv = sys.argv[1:] or ["today"]          # bare `atlas` = the morning check
+    argv = sys.argv[1:]
+    if not argv:                              # bare `atlas`: the numbered map
+        return cmd_map()
+    if argv[0] == "help":
+        argv = ["--help"]
+    if argv[0] not in sub.choices and not argv[0].startswith("-") and argv[0] not in ("page", "html"):
+        query = " ".join(argv)                # `atlas 5`, `atlas pi`, `atlas billing site`
+        return show(find(query), state())
     if argv[0] in ("page", "html"):           # `atlas page`: open the card page in the browser
         page = expand(CFG.get("html_out", ""))
         subprocess.run(["open", str(page if page.is_file() else ROOT / "ATLAS.md")]); return
