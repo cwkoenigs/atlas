@@ -221,7 +221,8 @@ def inspect(path: pathlib.Path, users: Users) -> dict:
         kind = "app"
     if not what:
         what = ("No README or description." if is_git else "A folder of files, no README.")
-    q = f'"{tilde(path)}"' if " " in path.name else tilde(path)
+    # ~ does not expand inside quotes, so a path with a space is written "$HOME/..."
+    q = (f'"$HOME/{path.relative_to(HOME)}"' if str(path).startswith(str(HOME)) else f'"{path}"') if " " in str(path) else tilde(path)
     return {
         "path": path, "name": path.name, "kind": kind, "remote": remote, "what": what,
         "where": tilde(path) + (f" ({remote})" if remote else ""),
