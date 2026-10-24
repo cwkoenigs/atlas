@@ -274,8 +274,6 @@ def loose_files(folder: pathlib.Path) -> list[pathlib.Path]:
 
 
 def draft(f: dict, personal: bool = True) -> dict:
-    c = A.new_card(f["name"], f["kind"], "this-mac", personal=personal, confidence="guess",
-                   where=f["where"], what=f["what"], source=f["source"], entry=f["entry"], check=f["check"])
-    c["_body"] = body(f)
-    c["_path"].write_text(A.dump(c))
-    return c
+    return A.new_card(f["name"], f["kind"], "this-mac", personal=personal, confidence="guess", body=body(f),
+                      by="scan", summary="drafted by atlas scan", where=f["where"], what=f["what"],
+                      source=f["source"], entry=f["entry"], check=f["check"])

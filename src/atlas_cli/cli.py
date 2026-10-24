@@ -172,6 +172,7 @@ def checks(cards, quiet: bool = False):
 
 
 def cmd_map(args) -> None:
+    wiki_quietly()
     cards = A.load()
     st = A.state()
     if args.check or not A.fresh(st):
@@ -183,7 +184,7 @@ def cmd_map(args) -> None:
         fails = sum(1 for c in lst if A.status(c, st)[1] == "fail")
         facts = [("things", str(len(lst))), ("needs a look", str(len(att))), ("failing", str(fails)),
                  ("checked", A.ago(A.last_checked(st))), ("places", str(len({c.get('host') for c in lst})))]
-        hints = ["type to filter · enter opens", "atlas new adds a card", "atlas help lists the rest"]
+        hints = ["type to filter · enter opens", "atlas wiki opens it in the browser", "atlas help lists the rest"]
         for line in S.banner(VERSION, facts, hints, str(A.ROOT).replace(os.path.expanduser("~"), "~"),
                              "what runs where", w=S.width(out), name="atlas"):
             out.print(line)
@@ -305,11 +306,34 @@ def cmd_open(args) -> None:
     out.print(S.outcome("ok", f"opened {c['title']}", str(c["_path"].relative_to(A.ROOT))))
 
 
-def cmd_page(args) -> None:
-    page = A.expand(A.CFG.get("html_out", ""))
-    target = page if page.is_file() else A.ROOT / "ATLAS.md"
-    subprocess.run(["open", str(target)])
-    out.print(S.outcome("ok", "opened the card page", str(target).replace(os.path.expanduser("~"), "~")))
+def cmd_wiki(args) -> None:
+    from .wiki import server as WS
+    if args.stop:
+        out.print(S.outcome("ok", "wiki stopped") if WS.stop() else S.outcome("warn", "the wiki was not running"))
+        return
+    if args.serve:
+        WS.serve()
+        return
+    try:
+        with out.status(S.status_label("starting the wiki", 0), spinner=S.SPINNER, spinner_style="accent"):
+            what = WS.ensure()
+    except RuntimeError as e:
+        say_error(str(e), "atlas wiki --serve runs it in this terminal, to see why")
+        sys.exit(1)
+    path = WS.page_path(resolve(" ".join(args.query))) if args.query else "/"
+    url = WS.url(path)
+    if not args.no_open:
+        subprocess.run(["open", url])
+    out.print(S.outcome("ok", "atlas wiki", f"{url}{G.sep}{what}" + ("" if args.no_open else f"{G.sep}opened in your browser")))
+
+
+def wiki_quietly() -> None:
+    """Bare `atlas` keeps the wiki up, so the life-admin tile and bookmarks always work."""
+    try:
+        from .wiki import server as WS
+        WS.ensure(wait=False)
+    except Exception:
+        pass
 
 
 def cmd_scan(args) -> None:
@@ -379,7 +403,8 @@ HELP = [
     ("atlas retire 5", "the thing is gone · --reason \"…\""),
     ("atlas personal 5", "keep it on this mac only · --undo shares it"),
     ("atlas scan", "draft a card for every folder in ~/Developer without one · --dry-run"),
-    ("atlas page", "open the card page in the browser"),
+    ("atlas wiki", "the atlas as a wiki in your browser: read, search, edit, history"),
+    ("atlas wiki 5", "open one card's page · --stop stops the wiki"),
     ("atlas lint", "missing fields, unknown places, broken links"),
 ]
 
@@ -396,7 +421,7 @@ def cmd_help(args=None) -> None:
 
 
 COMMANDS = {"new": cmd_new, "check": cmd_check, "promote": cmd_promote, "confirm": cmd_confirm,
-            "retire": cmd_retire, "personal": cmd_personal, "open": cmd_open, "page": cmd_page,
+            "retire": cmd_retire, "personal": cmd_personal, "open": cmd_open, "page": cmd_wiki, "wiki": cmd_wiki,
             "lint": cmd_lint, "help": cmd_help, "scan": cmd_scan, "show": cmd_show, "today": cmd_map, "map": cmd_map}
 
 
@@ -422,7 +447,11 @@ def parser() -> argparse.ArgumentParser:
     s = sub.add_parser("check", add_help=False); s.add_argument("query", nargs="*")
     s = sub.add_parser("scan", add_help=False); s.add_argument("folder", nargs="?")
     s.add_argument("--dry-run", action="store_true"); s.add_argument("--shared", action="store_true")
-    for name in ("page", "lint", "help"):
+    for name in ("wiki", "page"):
+        s = sub.add_parser(name, add_help=False); s.add_argument("query", nargs="*")
+        s.add_argument("--stop", action="store_true"); s.add_argument("--serve", action="store_true")
+        s.add_argument("--no-open", action="store_true")
+    for name in ("lint", "help"):
         sub.add_parser(name, add_help=False)
     return p
 

@@ -1,6 +1,8 @@
 """atlas core: cards, checks, search, the generated pages. No terminal output here."""
 import datetime as dt, html, json, os, pathlib, re, secrets, shutil, subprocess, sys
 
+from . import history as H
+
 ROOT = pathlib.Path(os.environ.get("ATLAS_DIR", pathlib.Path.home() / "Developer" / "atlas")).expanduser()
 CFG = json.loads((ROOT / "atlas.json").read_text())
 STATE = ROOT / ".state" / "checks.json"
@@ -255,71 +257,43 @@ def build_md(cards, st):
     (ROOT / "ATLAS.md").write_text("\n".join(L))
 
 
-# ---------- build: HTML page in the dashboard-style system ----------
+# ---------- build: the life-admin page, which forwards to the wiki ----------
+
+def wiki_url(path="/"):
+    port = os.environ.get("ATLAS_WIKI_PORT") or CFG.get("wiki_port", 8788)
+    return f"http://localhost:{port}{path}"
+
 
 def build_html(cards, st):
+    """The life-admin hub's Atlas tile opens this page. It forwards to the wiki when the wiki is running,
+    and says how to start it when it is not. Built from the dashboard template, so it passes check_theme."""
     out, tpl = CFG.get("html_out"), CFG.get("template")
     if not out or not tpl or not expand(tpl).is_file():
         return None
     out, tpl = expand(out), expand(tpl).read_text()
     prefix = tpl[: tpl.index("<!-- @ds-mark end -->") + len("<!-- @ds-mark end -->")]
     prefix = re.sub(r"<title>.*?</title>", "<title>Atlas</title>", prefix, count=1)
-    e = html.escape
-    active = [c for c in cards if c["_folder"] != "retired"]
-    counts = {k: sum(1 for c in active if status(c, st)[1] == k) for k in ("ok", "fail", "none", "draft")}
-    rel = lambda p: os.path.relpath(p, out.parent)
-
-    def code(s):  # `x` -> <code>x</code>
-        return re.sub(r"`([^`]+)`", r"<code>\1</code>", e(s))
-
-    banners = "".join(
-        f'<div class="banner" data-label="{"Failing" if rank == 0 else "Draft" if rank == 1 else "Check"}">'
-        f'<span><strong>{e(c["title"])}</strong> <code>{e(c["id"])}</code>: {code(why)}</span></div>\n'
-        for rank, c, why in attention(active, st) if rank <= 2)
-    sections, n = [], 0
-    by_host = {}
-    for c in active:
-        by_host.setdefault(c.get("host", ""), []).append(c)
-    for h in list(CFG["hosts"]) + sorted(x for x in by_host if x not in CFG["hosts"]):
-        if h not in by_host:
-            continue
-        n += 1
-        tiles = []
-        for c in sorted(by_host[h], key=lambda c: (c["_folder"] == "inbox", c["title"])):
-            word, s = status(c, st)
-            tiles.append(
-                f'<a class="tile" data-freshness="{word}" data-state="{s}" href="{e(rel(c["_path"]))}">'
-                f'<span class="idx">{e(c["id"])} · {e(c.get("kind", ""))}</span>'
-                f'<span class="title">{e(c["title"])}</span>'
-                f'<span class="desc">{code(c.get("what", ""))}</span>'
-                f'<span class="desc"><strong>Why</strong> {code(c.get("why", ""))}</span>'
-                f'<span class="meta">{e(c.get("where", ""))}</span></a>')
-        sections.append(f'<h2><span class="idx">{n:02d}</span>{e(host_name(h))}</h2>\n'
-                        f'<div class="tiles">\n' + "\n".join(tiles) + "\n</div>")
-    now = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
-    stats = "".join(f"<div><dt>{a}</dt><dd>{b}<small>{s}</small></dd></div>" for a, b, s in [
-        ("Cards", len(active) - counts["draft"], f"{len(by_host)} places"),
-        ("OK", counts["ok"], "checks passing"),
-        ("Failing", counts["fail"], "checks failing"),
-        ("Inbox", counts["draft"], "drafts to promote")])
+    url = html.escape(wiki_url())
     page = prefix + f"""
     <a class="brand" href="index.html">Life admin</a><span class="crumb">/ atlas</span>
-    <p class="refreshed" id="refreshed" data-live>Checked {now}</p>
   </div>
 </header>
-<section class="hero">
-  <div class="wrap">
-    <p class="eyebrow">{e(str(ROOT).replace(str(HOME), "~"))}</p>
-    <h1>Atlas</h1>
-    <p class="lead">What runs where, and why. Each card is a markdown file; run <code>atlas check</code> to re-check and rebuild.</p>
-    <dl class="stats">{stats}</dl>
-  </div>
-</section>
 <main class="wrap">
-{banners}
-{chr(10).join(sections)}
+  <h2>Atlas</h2>
+  <p class="lead" id="msg">Opening the atlas wiki at <a href="{url}">{url}</a>.</p>
+  <p id="down" hidden>The wiki is not running. In a terminal, type <code>atlas wiki</code>: it starts the wiki and opens it here.</p>
 </main>
-<footer class="site"><div class="wrap">Built from <code>{e(str(ROOT / "cards").replace(str(HOME), "~"))}</code> by <code>atlas check</code>. Edit the cards, not this page.</div></footer>
+<footer class="site"><div class="wrap">Atlas lives in <code>~/Developer/atlas</code>; this page only forwards to its wiki.</div></footer>
+<script>
+const url = "{url}";
+const probe = new Image();
+probe.onload = () => location.replace(url);
+probe.onerror = () => {{
+  document.getElementById("msg").textContent = "The atlas wiki is not running.";
+  document.getElementById("down").hidden = false;
+}};
+probe.src = url + "probe.gif?" + Date.now();
+</script>
 </body>
 </html>
 """
@@ -336,8 +310,18 @@ def place(c, folder):
     return d / c["_path"].name
 
 
-def new_card(title, kind, host, personal=False, confidence="believed", **fields):
+def save(c, summary, by="cli", text=None):
+    """Write a card, keeping the version before and the new one in its history."""
+    H.ensure_base(ROOT, c.get("id"), c["_path"])
+    text = dump(c) if text is None else text
+    c["_path"].write_text(text)
+    H.record(ROOT, c.get("id"), text, summary, by)
+
+
+def new_card(title, kind, host, personal=False, confidence="believed", body=None, by="cli", summary="created", **fields):
     slug = slugify(title)
+    if not slug:
+        raise ValueError("a card needs a title with letters or digits")
     if any(c["_slug"] == slug for c in load()):
         raise ValueError(f"a card named {slug} already exists")
     path = ROOT / "inbox" / ("personal" if personal else "") / f"{slug}.md"
@@ -347,12 +331,13 @@ def new_card(title, kind, host, personal=False, confidence="believed", **fields)
     card.update(id="a-" + secrets.token_hex(3), title=title, kind=kind, host=host, confidence=confidence,
                 confirmed="", links=fields.pop("links", []) or [], notes=[])
     card.update({k: v for k, v in fields.items() if v})
-    card["_body"] = tpl["_body"]
+    card["_body"] = tpl["_body"] if body is None else body
     path.write_text(dump(card))
+    H.record(ROOT, card["id"], path.read_text(), summary, by)
     return parse(path)
 
 
-def promote(c, force=False):
+def promote(c, force=False, by="cli"):
     """inbox -> cards. Returns (dest, problem); problem is None on success."""
     if c["_folder"] != "inbox":
         return None, f"it is already in {c['_folder']}/"
@@ -366,32 +351,53 @@ def promote(c, force=False):
     c["confirmed"] = TODAY.isoformat()
     if c.get("confidence") in ("", "guess") and not missing:
         c["confidence"] = "confirmed"
+    H.ensure_base(ROOT, c["id"], c["_path"])
     dest = place(c, "cards")
     dest.write_text(dump(c))
     c["_path"].unlink()
+    H.record(ROOT, c["id"], dest.read_text(), "promoted from the inbox to the map", by, force=True)
     return dest, None
 
 
-def confirm(c):
+def confirm(c, by="cli"):
     c["confirmed"] = TODAY.isoformat()
-    c["_path"].write_text(dump(c))
+    save(c, "confirmed still true", by)
 
 
-def retire(c, reason=""):
+def retire(c, reason="", by="cli"):
+    H.ensure_base(ROOT, c.get("id"), c["_path"])
     c["retired"] = TODAY.isoformat()
     c["retired_reason"] = reason
     dest = place(c, "retired")
     dest.write_text(dump(c))
     c["_path"].unlink()
+    H.record(ROOT, c.get("id"), dest.read_text(), "retired" + (f": {reason}" if reason else ""), by, force=True)
     return dest
 
 
-def set_personal(c, want=True):
+def unretire(c, by="cli"):
+    """retired -> inbox, as a draft to confirm again."""
+    if c["_folder"] != "retired":
+        return None
+    H.ensure_base(ROOT, c.get("id"), c["_path"])
+    for k in ("retired", "retired_reason"):
+        c.pop(k, None)
+    dest = place(c, "inbox")
+    dest.write_text(dump(c))
+    c["_path"].unlink()
+    H.record(ROOT, c.get("id"), dest.read_text(), "brought back from retired, as a draft", by, force=True)
+    return dest
+
+
+def set_personal(c, want=True, by="cli"):
     if c["_personal"] == want:
         return None
+    H.ensure_base(ROOT, c.get("id"), c["_path"])
     c["_personal"] = want
     dest = place(c, c["_folder"])
     c["_path"].rename(dest)
+    H.record(ROOT, c.get("id"), dest.read_text(),
+             "made personal: this Mac only, out of git" if want else "shared: goes to git with the other cards", by, force=True)
     return dest
 
 

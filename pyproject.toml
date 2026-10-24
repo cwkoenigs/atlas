@@ -3,7 +3,7 @@ name = "atlas-map"
 version = "0.2.0"
 description = "What runs where, and why: one checked card per thing, built on ds-cli-design"
 requires-python = ">=3.10"
-dependencies = ["ds-cli-design"]
+dependencies = ["ds-cli-design", "markdown-it-py>=3"]
 
 [tool.uv.sources]
 ds-cli-design = { git = "https://github.com/cwkoenigs/ds-cli-design" }

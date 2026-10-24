@@ -1,6 +1,6 @@
 # atlas
 
-What runs where, and why. One markdown card per thing (a site, a job, a repo, a folder, a device), each with a check command that proves it is still true, and one page built from all of them to read at the start of the day.
+What runs where, and why. One markdown card per thing (a site, a job, a repo, a folder, a device), each with a check command that proves it is still true, and a wiki built from all of them to read at the start of the day.
 
 Atlas never moves anything. It records where a thing already is, so an hour spent untangling it is not spent twice.
 
@@ -12,12 +12,25 @@ atlas 2            # read card 2
 atlas pi           # read the card with "pi" in its name (a picker if several match)
 atlas open 2       # open card 2's file, with the full untangle story
 atlas new          # a form to draft a card
+atlas wiki         # the whole atlas as a wiki in your browser
 atlas help         # everything else
 ```
 
 You never type an id. Every command that takes a card (`open`, `check`, `confirm`, `promote`, `retire`, `personal`) takes a number from the map or a word from the card's name. `atlas` re-runs the checks when the last run is over 6 hours old; `atlas check` forces it. `--plain` prints without colour or widgets (also automatic when piped).
 
 The look comes from [ds-cli-design](https://github.com/cwkoenigs/ds-cli-design), the terminal design system (roles, glyphs, the 80-column grid, frames for anything that needs you, the dog-and-cat banner). Atlas imports it; it holds no colours or glyphs of its own.
+
+## The wiki: `atlas wiki`
+
+`atlas wiki` opens the atlas as a wiki at http://localhost:8788 (it starts the wiki if it is not running; bare `atlas` keeps it running too, and the life-admin hub's Atlas tile goes there). Light by default; the Dark button switches and remembers. `atlas wiki 5` opens one card's page; `atlas wiki --stop` stops it.
+
+- **A page per card**, with an at-a-glance box (status, place, kind, where, what, why, where to edit it, how to reach it, the check) and buttons that do what the commands do: run the check, still true, promote, make personal or share, retire, bring back.
+- **Links.** `[[Page name]]` (or `[[Page name|shown text]]`) in any card links to that page; a missing page shows as a dashed link that creates it. A path in backticks, like `` `~/Developer/atlas` ``, links to the page about that folder. Each page lists what it links to, what links to it, what it is part of, what is inside it, and what shares its repo.
+- **Editing.** Edit a whole page or one section (the `edit` link by each heading), preview before saving, and leave a summary. If the file changed while you were editing (the CLI, an agent, another window), it tells you instead of overwriting. It refuses anything that looks like a password, token or key. Renaming a page keeps the old name working.
+- **History.** Every version of every page, from the wiki, the CLI, a scan, an editor or git, newest first; compare any two, see what changed, restore an old version. Kept in `.state/history/`, never in git, so personal pages' history stays on this Mac too.
+- **Finding things.** Search as you type in the top bar (`/` jumps there); full-text search with highlighted matches; Recent changes; Needs a look (with "Check everything now"); All pages A to Z; a page for each place and each kind; Wanted pages (links nobody has written); Retired pages; Random page.
+
+It is served by atlas itself (Python's standard library) on 127.0.0.1 only. It answers only to `localhost` and accepts a form only from its own pages, so another website cannot drive it. Its look is the Data Science design system's docs-portal style: `src/atlas_cli/wiki/shell.html` carries the generated theme regions, so `python3 ~/Developer/dashboard-style/scripts/build_theme.py --into src/atlas_cli/wiki/shell.html` refreshes it after a design change and `check_theme.py` checks it.
 
 ## Install
 
@@ -75,7 +88,7 @@ atlas promote a-7e21c4      # inbox -> cards, once what/why/where are filled and
 | `atlas personal ID [--undo]` | Keep a card on this Mac only, or share it again |
 | `atlas show ID`, `atlas find TEXT` | Read cards in the terminal |
 | `atlas open ID [--edit]` | Open a card file in its app (or `$EDITOR`) |
-| `atlas page` | Open the card page in the browser |
+| `atlas wiki [ID]` | Open the wiki (or one card's page); `--stop` stops it, `--no-open` only starts it. `atlas page` does the same |
 | `atlas lint` | Missing fields, unknown hosts, links to nothing |
 
 ID can be the number from the map, any word from the card's name, its file name, or its id.
@@ -106,10 +119,10 @@ Below the frontmatter: **Short version** (what to remember), **Untangled** (what
 |---|---|---|
 | `cards/`, `inbox/`, `retired/` | The cards. The only thing you edit | yes |
 | `*/personal/` | Personal cards | no |
-| `ATLAS.md` | The morning page, rebuilt by `atlas` and `atlas check` | no |
-| `atlas.json` | Places (hosts) and their names, the stale threshold, where the HTML page goes | yes |
-| `src/atlas_cli/` | The CLI: `core.py` (cards, checks, pages), `cli.py` (the terminal), `picker.py` (cards into the design system's picker) | yes |
-| `pyproject.toml` | Package `atlas-map`, command `atlas`; needs ds-cli-design | yes |
-| `.state/` | Last check results | no |
+| `ATLAS.md` | The morning page in markdown, rebuilt by `atlas` and `atlas check` | no |
+| `atlas.json` | Places (hosts) and their names, the stale threshold, the wiki's port (`wiki_port`, default 8788), and the life-admin page that forwards to the wiki | yes |
+| `src/atlas_cli/` | The CLI: `core.py` (cards, checks, pages), `cli.py` (the terminal), `picker.py` (cards into the design system's picker), `history.py` (every version of every card), `scan.py`, `wiki/` (the wiki) | yes |
+| `pyproject.toml` | Package `atlas-map`, command `atlas`; needs ds-cli-design and markdown-it-py | yes |
+| `.state/` | Last check results, page history, the wiki's log | no |
 
-On a new machine: clone to `~/Developer/atlas`, `uv tool install --editable ~/Developer/atlas`, run `atlas`. If `atlas.json`'s `template` path does not exist there, it builds only `ATLAS.md`.
+On a new machine: clone to `~/Developer/atlas`, `uv tool install --editable ~/Developer/atlas`, run `atlas`. If `atlas.json`'s `template` path does not exist there, it skips the life-admin page; `atlas wiki` works anywhere.
