@@ -31,6 +31,15 @@ cp ~/Developer/atlas/bin/atlas-shim /opt/homebrew/bin/atlas   # if ~/.local/bin 
 
 Editable means a `git pull` updates the command. The cards stay in `~/Developer/atlas` (set `ATLAS_DIR` to use another folder).
 
+## Finding what's there: `atlas scan`
+
+```sh
+atlas scan --dry-run      # what it would draft, nothing written
+atlas scan                # ~/Developer by default; or atlas scan ~/some/folder
+```
+
+For each folder directly inside, it reads the git remote and state, what the README or package says it is, how it deploys (`.vercel`, `vercel.json`, Fly, GitHub Actions), what on this Mac uses it (launchd jobs, Hermes cron, agent skills, uv tools) and other clones of the same repo. A folder no card mentions gets a draft in the inbox with `where`, `what`, a check, those facts, and gotchas (no remote, uncommitted or unpushed work, not in git). `why` stays empty: only you know it. Drafts are personal (this Mac only) until you share them with `atlas personal <n> --undo`; `--shared` drafts them shared. The scan only reads; it never changes the folders.
+
 ## After untangling something
 
 Ask Hermes to "put this in the atlas"; the `atlas` skill turns the session into a card. By hand:

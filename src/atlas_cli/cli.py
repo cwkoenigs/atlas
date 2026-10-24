@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import pathlib
 import subprocess
 import sys
 import textwrap
@@ -311,6 +312,52 @@ def cmd_page(args) -> None:
     out.print(S.outcome("ok", "opened the card page", str(target).replace(os.path.expanduser("~"), "~")))
 
 
+def cmd_scan(args) -> None:
+    from . import scan as SC
+    folder = pathlib.Path(os.path.expanduser(args.folder or "~/Developer")).resolve()
+    if not folder.is_dir():
+        say_error(f"no folder at {args.folder}", "atlas scan ~/Developer")
+        sys.exit(1)
+    subs = [p for p in folder.iterdir() if p.is_dir() and not p.name.startswith(".")]
+    out.print(Text.assemble(("scanning ", "muted"), (SC.tilde(folder), "bold"), (f"{G.sep}{len(subs)} folders", "muted")))
+    results = []
+    with out.status(S.status_label("reading folders", 0), spinner=S.SPINNER, spinner_style="accent") as live:
+        started = time.monotonic()
+        for f, card in SC.scan(folder):
+            results.append((f, card))
+            live.update(S.status_label(f"read {f['name']}", int(time.monotonic() - started)))
+    num = num_of(A.load())
+    nw = max(len(f["name"]) for f, _ in results) + 2
+    drafted = known = 0
+    for f, card in results:
+        name = A.clip(f["name"], 26).ljust(min(nw, 28))
+        if card:
+            known += 1
+            n = num.get(card["_slug"], "")
+            out.print(Text.assemble((G.ok, "ok"), " ", (name, ""), (f"has a card{G.sep}{n} {card['title']}", "dim")))
+            continue
+        label = "would draft  " if args.dry_run else "drafted  "
+        note = A.clip(f["what"], S.width(out) - 2 - len(name) - len(label) - 1)
+        if args.dry_run:
+            out.print(Text.assemble((G.warn, "warn"), " ", (name, "bold"), ("would draft  ", "warn"), (note, "muted")))
+        else:
+            SC.draft(f, personal=not args.shared)
+            out.print(Text.assemble((G.warn, "warn"), " ", (name, "bold"), ("drafted  ", "warn"), (note, "muted")))
+        drafted += 1
+    loose = SC.loose_files(folder)
+    facts = [f"{len(results)} folders", f"{known} have cards",
+             f"{drafted} {'to draft' if args.dry_run else 'drafted'}" + ("" if args.shared or not drafted else ", personal")]
+    if loose:
+        facts.append(f"{len(loose)} loose files")
+    out.print(S.footer(*facts))
+    if drafted and not args.dry_run:
+        A.rebuild()
+        out.print(S.hint("atlas lists them under needs a look · fill in why, then atlas promote <number>"))
+        out.print(S.hint("not needed? atlas retire <number> --reason \"...\""))
+    elif drafted:
+        out.print(S.hint("atlas scan without --dry-run writes the drafts to the inbox"))
+
+
 def cmd_lint(args) -> None:
     cards, problems = A.lint()
     if not problems:
@@ -331,6 +378,7 @@ HELP = [
     ("atlas confirm 5", "you re-read it and it is still true"),
     ("atlas retire 5", "the thing is gone · --reason \"…\""),
     ("atlas personal 5", "keep it on this mac only · --undo shares it"),
+    ("atlas scan", "draft a card for every folder in ~/Developer without one · --dry-run"),
     ("atlas page", "open the card page in the browser"),
     ("atlas lint", "missing fields, unknown places, broken links"),
 ]
@@ -349,7 +397,7 @@ def cmd_help(args=None) -> None:
 
 COMMANDS = {"new": cmd_new, "check": cmd_check, "promote": cmd_promote, "confirm": cmd_confirm,
             "retire": cmd_retire, "personal": cmd_personal, "open": cmd_open, "page": cmd_page,
-            "lint": cmd_lint, "help": cmd_help, "show": cmd_show, "today": cmd_map, "map": cmd_map}
+            "lint": cmd_lint, "help": cmd_help, "scan": cmd_scan, "show": cmd_show, "today": cmd_map, "map": cmd_map}
 
 
 def parser() -> argparse.ArgumentParser:
@@ -372,6 +420,8 @@ def parser() -> argparse.ArgumentParser:
         if name == "personal": s.add_argument("--undo", action="store_true")
         if name == "open": s.add_argument("--edit", action="store_true")
     s = sub.add_parser("check", add_help=False); s.add_argument("query", nargs="*")
+    s = sub.add_parser("scan", add_help=False); s.add_argument("folder", nargs="?")
+    s.add_argument("--dry-run", action="store_true"); s.add_argument("--shared", action="store_true")
     for name in ("page", "lint", "help"):
         sub.add_parser(name, add_help=False)
     return p
