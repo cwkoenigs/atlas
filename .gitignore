@@ -5,3 +5,6 @@
 __pycache__/
 *.egg-info/
 .venv/
+# Durable move claims/staging are local recovery backups, never shared content.
+.atlas-claim-*/
+.atlas-move-*

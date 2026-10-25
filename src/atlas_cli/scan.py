@@ -7,8 +7,12 @@ the inbox with `where`, `what`, a check, and those facts. `why` stays empty: onl
 """
 from __future__ import annotations
 
+import shlex
+
 import datetime as dt
 import json
+import os
+from itertools import islice
 import pathlib
 import re
 import subprocess
@@ -178,6 +182,17 @@ def other_clones(path: pathlib.Path, remote: str) -> list[str]:
 
 # ── one folder ───────────────────────────────────────────────────────────────
 
+def file_paths(path):
+    """Lazily visit ordinary files; never recurse into dependency/cache trees or symlinks."""
+    pruned = {".git", "node_modules", ".venv", "venv", "__pycache__", ".cache", ".pytest_cache"}
+    for directory, dirs, files in os.walk(path, followlinks=False):
+        dirs[:] = sorted(d for d in dirs if d not in pruned)
+        for name in sorted(files):
+            candidate = pathlib.Path(directory) / name
+            if candidate.is_file():
+                yield candidate
+
+
 def inspect(path: pathlib.Path, users: Users) -> dict:
     is_git = (path / ".git").exists()
     facts, gotchas = [], []
@@ -200,7 +215,7 @@ def inspect(path: pathlib.Path, users: Users) -> dict:
         if remote and not remote.startswith("github.com/cwkoenigs/"):
             facts.append("someone else's repo (a clone, not Clark's project)")
     else:
-        files = [f for f in path.rglob("*") if f.is_file() and ".git" not in f.parts][:5000]
+        files = list(islice(file_paths(path), 5000))
         newest = max((f.stat().st_mtime for f in files), default=path.stat().st_mtime)
         kinds = {}
         for f in files:
@@ -221,8 +236,7 @@ def inspect(path: pathlib.Path, users: Users) -> dict:
         kind = "app"
     if not what:
         what = ("No README or description." if is_git else "A folder of files, no README.")
-    # ~ does not expand inside quotes, so a path with a space is written "$HOME/..."
-    q = (f'"$HOME/{path.relative_to(HOME)}"' if str(path).startswith(str(HOME)) else f'"{path}"') if " " in str(path) else tilde(path)
+    q = shlex.quote(str(path.resolve()))
     return {
         "path": path, "name": path.name, "kind": kind, "remote": remote, "what": what,
         "where": tilde(path) + (f" ({remote})" if remote else ""),

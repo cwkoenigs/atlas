@@ -142,9 +142,10 @@ class Snap:
     def resolve(self, target: str):
         """[[target]] -> (url, label, exists)."""
         t = target.strip()
-        if "/" in t and not t.startswith(("~", "/")):
-            t = t.rsplit("/", 1)[-1]                       # [[cards/slug|Title]], as ATLAS.md writes them
         c = self.by_key.get(t.lower())
+        if c is None and re.fullmatch(r"(?:cards|inbox|retired)/(?:personal/)?[^/]+", t):
+            name = t.rsplit("/", 1)[-1].removesuffix(".md")
+            c = self.by_key.get(name.lower())
         if c:
             return page_url(c), c["title"], True
         for k, name in self.hosts.items():
@@ -360,19 +361,15 @@ def revision_text(rev: dict) -> str:
 
 def parse_text(text: str, like) -> dict:
     """A card dict from a version's text, placed like the current card (for rendering an old version)."""
-    m = re.match(r"---\n(.*?)\n---\n?(.*)", text, re.S)
     c = dict(like)
-    if not m:
+    try:
+        parsed = A.parse_text(text, like["_path"])
+    except ValueError:
         c["_body"] = text
         return c
     for k in list(c):
         if not k.startswith("_"):
             c.pop(k)
-    tmp = A.ROOT / ".state" / "rev.md"
-    tmp.parent.mkdir(exist_ok=True)
-    tmp.write_text(text)
-    parsed = A.parse(tmp)
-    tmp.unlink()
     for k, v in parsed.items():
         if not k.startswith("_") or k == "_body":
             c[k] = v

@@ -21,7 +21,7 @@ HELP = {
     "source": "Where you change it: the repo and the path in it.",
     "entry": "How to get to it: a URL or a command.",
     "check": "A command that succeeds only while this page is true: read-only, run from your home folder, under 15 seconds.",
-    "links": "Related pages by name, separated by commas. In the text, [[Page name]] links too.",
+    "links": "Related page IDs or names, separated by commas; quote names containing commas. In the text, [[Page name]] links too.",
 }
 CONFIDENCE = [("confirmed", "Confirmed: seen to be true"), ("believed", "Believed: very likely true"), ("guess", "Guess: not checked yet")]
 SPECIAL = [("Needs a look", "/special/attention", "failing checks, drafts, guesses, stale pages"),
@@ -279,7 +279,7 @@ def links_page(snap: Snap, c):
 
 def form_values(snap: Snap, c) -> dict:
     v = {k: str(c.get(k) or "") for k in ("title", "kind", "host", "where", "what", "why", "source", "entry", "check", "confidence")}
-    v["links"] = ", ".join((snap.by_key.get(str(l).lower()) or {}).get("title", str(l)) for l in c.get("links") or [])
+    v["links"] = ", ".join(str(l) for l in c.get("links") or [])
     v["personal"] = "yes" if c["_personal"] else ""
     v["body"] = c.get("_body", "").lstrip("\n")
     v["summary"] = ""
@@ -434,7 +434,7 @@ def diff(snap: Snap, c, a_key, b_key):
     revs = R.revisions(c)
     by = {r["key"]: r for r in revs}
     current = {"key": "current", "at": revs[0]["at"] if revs else "", "by": "", "summary": "the current version",
-               "text": c["_path"].read_text()}
+               "text": c["_raw"]}
     ra, rb = by.get(a_key) or (current if a_key == "current" else None), by.get(b_key) or (current if b_key in (None, "", "current") else None)
     if not ra or not rb:
         return None
@@ -461,12 +461,17 @@ def events(snap: Snap, limit=200):
         hist = H.entries(A.ROOT, c.get("id"))
         for x in hist:
             out.append((x["at"], c, x["by"], x.get("summary", ""), f"h{x['n']}", f"h{x['n'] - 1}" if x["n"] > 1 else None))
-    shared = {str(c["_path"].relative_to(A.ROOT)): c for c in snap.cards if not c["_personal"]}
-    by_stem = {c["_slug"]: c for c in snap.cards if not c["_personal"]}
-    for g in R.git_log(["cards", "inbox", "retired"]):
-        for p in g["paths"]:
-            c = shared.get(p) or by_stem.get(pathlib.Path(p).stem)
-            if c and p.endswith(".md") and "/personal/" not in p:
+    for c in snap.cards:
+        if c["_personal"]:
+            continue
+        # Per-card --follow keeps old filenames associated with this page across renames.
+        rel = c["_path"].relative_to(A.ROOT).as_posix()
+        seen = set()
+        for g in R.git_log([rel]):
+            if g["sha"] in seen:
+                continue
+            seen.add(g["sha"])
+            if any(p.endswith(".md") and "/personal/" not in p for p in g["paths"]):
                 out.append((g["at"], c, "git", g["summary"], f"g{g['sha'][:12]}", None))
     out.sort(key=lambda x: (x[0], int(x[4][1:]) if x[4].startswith("h") else 0), reverse=True)
     return out[:limit]

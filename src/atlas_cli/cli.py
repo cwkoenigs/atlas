@@ -9,6 +9,7 @@ import argparse
 import asyncio
 import os
 import pathlib
+import shlex
 import subprocess
 import sys
 import textwrap
@@ -64,7 +65,7 @@ def reason(why: str) -> str:
 def print_map(cards, st) -> None:
     lst = A.ordered(cards)
     num = num_of(cards)
-    tw = min(max(len(c["title"]) for c in lst), 28) + 2
+    tw = min(max((len(c["title"]) for c in lst), default=0), 28) + 2
     row_w = S.width(out)
 
     def row(c, note: str, note_style: str = "muted") -> Text:
@@ -175,7 +176,7 @@ def cmd_map(args) -> None:
     wiki_quietly()
     cards = A.load()
     st = A.state()
-    if args.check or not A.fresh(st):
+    if not args.no_check and (args.check or not A.fresh(st)):
         st = checks([c for c in cards if c["_folder"] != "retired"], quiet=True)
         A.rebuild(cards, st)
     if TTY:
@@ -240,12 +241,12 @@ def cmd_new(args) -> None:
             W.Field("title", "title", args.title or "", required=True, example="Ringneck billing site"),
             W.Field("kind", "kind", args.kind or "service", choices=[(k, k) for k in kinds]),
             W.Field("host", "place", args.host or hosts[0][0], choices=[(k, v.lower()) for k, v in hosts]),
-            W.Field("where", "where", hint="the exact place: path, project, URL"),
-            W.Field("what", "what", hint="one line: what it does"),
-            W.Field("why", "why", hint="one line: why it exists; leave empty if unknown"),
-            W.Field("source", "edit it at", hint="the source of truth: repo and path"),
-            W.Field("entry", "get to it", hint="a URL or a command"),
-            W.Field("check", "check", hint="a command that succeeds only while this card is true",
+            W.Field("where", "where", args.where, hint="the exact place: path, project, URL"),
+            W.Field("what", "what", args.what, hint="one line: what it does"),
+            W.Field("why", "why", args.why, hint="one line: why it exists; leave empty if unknown"),
+            W.Field("source", "edit it at", args.source, hint="the source of truth: repo and path"),
+            W.Field("entry", "get to it", args.entry, hint="a URL or a command"),
+            W.Field("check", "check", args.check, hint="a command that succeeds only while this card is true",
                     example="curl -fsS -o /dev/null -m 10 https://…"),
             W.Field("personal", "personal", "yes" if args.personal else "no",
                     choices=[("no", "no, share it in git"), ("yes", "yes, this mac only")]),
@@ -256,6 +257,7 @@ def cmd_new(args) -> None:
         if values is None:
             out.print(S.hint("cancelled · nothing written"))
             return
+    values.setdefault("links", args.link)
     personal = values.pop("personal") == "yes"
     try:
         c = A.new_card(values.pop("title"), values.pop("kind"), values.pop("host"), personal=personal,
@@ -301,7 +303,10 @@ def cmd_personal(args) -> None:
 def cmd_open(args) -> None:
     c = resolve(" ".join(args.query))
     if args.edit and os.environ.get("EDITOR"):
-        os.execvp(os.environ["EDITOR"], [os.environ["EDITOR"], str(c["_path"])])
+        editor = shlex.split(os.environ["EDITOR"])
+        if not editor:
+            raise ValueError("EDITOR must name an executable.")
+        os.execvp(editor[0], editor + [str(c["_path"])])
     subprocess.run(["open", str(c["_path"])])
     out.print(S.outcome("ok", f"opened {c['title']}", str(c["_path"].relative_to(A.ROOT))))
 
@@ -351,7 +356,7 @@ def cmd_scan(args) -> None:
             results.append((f, card))
             live.update(S.status_label(f"read {f['name']}", int(time.monotonic() - started)))
     num = num_of(A.load())
-    nw = max(len(f["name"]) for f, _ in results) + 2
+    nw = max((len(f["name"]) for f, _ in results), default=0) + 2
     drafted = known = 0
     for f, card in results:
         name = A.clip(f["name"], 26).ljust(min(nw, 28))
@@ -475,6 +480,9 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(2)
     try:
         COMMANDS[args.cmd](args)
+    except (ValueError, OSError, RuntimeError) as ex:
+        say_error(str(ex), "reload the card and retry; atlas lint checks the inventory")
+        sys.exit(1)
     except KeyboardInterrupt:
         out.print(S.hint("interrupted"))
         sys.exit(130)
