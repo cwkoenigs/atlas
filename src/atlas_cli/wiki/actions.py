@@ -5,6 +5,7 @@ same way and every change lands in the page's history.
 """
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 import re
@@ -36,7 +37,9 @@ def one_line(v: str) -> str:
 def _links(snap, text: str):
     """'Pi home server, old Mac' -> (ids, problem)."""
     ids, unknown = [], []
-    for name in [x.strip() for x in (text or "").split(",") if x.strip()]:
+    text = (text or "").strip()
+    names = [text] if text.lower() in snap.by_key else next(csv.reader([text], skipinitialspace=True))
+    for name in [x.strip() for x in names if x.strip()]:
         c = snap.by_key.get(name.lower())
         (ids.append(c.get("id") or c["_slug"]) if c else unknown.append(name))
     return ids, (f"No page is called {', '.join(e(u) for u in unknown)}. Related pages must already exist." if unknown else "")
@@ -60,11 +63,13 @@ def _posted(form) -> dict:
     return v
 
 
+@A.transaction
 def save_edit(snap, c, form):
     section = form.get("section")
     section = int(section) if section not in (None, "") and str(section).isdigit() else None
-    current = c["_path"].read_text()
-    base = form.get("base") or digest(current)
+    current = A.read_text(c["_path"])
+    base = form.get("base") or digest(c["_raw"])
+    c = A.parse_text(current, c["_path"])
     problems = []
     if base != digest(current):
         problems.append("This page changed while you were editing it (the atlas command, an agent or another window "
@@ -88,6 +93,10 @@ def save_edit(snap, c, form):
         if not new["title"]:
             problems.append("A page needs a title.")
         elif new["title"] != c["title"]:
+            try:
+                A.check_title(new["title"], c["_path"])
+            except A.Conflict as ex:
+                problems.append(e(ex))
             aliases = [a for a in (c.get("aliases") or []) if a.lower() != new["title"].lower()]
             new["aliases"] = aliases + [c["title"]]          # [[Old title]] keeps working, like a redirect
         new["_body"] = "\n" + v["body"].strip("\n") + "\n"
@@ -98,6 +107,11 @@ def save_edit(snap, c, form):
             section = None
         else:
             new["_body"] = R.join_section(parts, section, v["body"])
+    if section is None and (form.get("personal") == "yes") != c["_personal"]:
+        try:
+            A.move_destination(c, c["_folder"], form.get("personal") == "yes")
+        except A.Conflict as ex:
+            problems.append(e(ex))
     secret = _secret([new.get(k, "") for k in LINE_FIELDS] + [new.get("_body", "")])
     if secret:
         problems.append(secret)
@@ -148,16 +162,13 @@ def create_page(snap, form):
 
 def _checks(cards):
     """Run checks; a result macOS blocked (privacy settings) is not a real failure, so keep the old one."""
-    before = A.state()
-    st = A.run_checks(cards)
-    blocked = [c for c in cards if not st.get(c["id"], {}).get("ok") and "Operation not permitted" in st.get(c["id"], {}).get("out", "")]
-    if blocked:
-        for c in blocked:
-            if c["id"] in before:
-                st[c["id"]] = before[c["id"]]
-            else:
-                st.pop(c["id"], None)
-        A.STATE.write_text(json.dumps(st, indent=1) + "\n")
+    blocked = []
+    def accept(c, result):
+        if not result["ok"] and "Operation not permitted" in result["out"]:
+            blocked.append(c)
+            return False
+        return True
+    st = A.run_checks(cards, accept_result=accept)
     return st, blocked
 
 
@@ -210,7 +221,9 @@ def restore(snap, c, form):
     if not r:
         return "redirect", page_url(c) + "/history", fail("That version is not in the history any more.")
     text = R.revision_text(r)
-    if not re.match(r"---\n.*?\n---", text, re.S):
+    try:
+        A.parse_text(text, c["_path"])
+    except ValueError:
         return "redirect", page_url(c) + "/history", fail("That version could not be read.")
     A.save(c, f"restored the version from {R.when(r['at'])}", by="wiki", text=text)
     A.rebuild()

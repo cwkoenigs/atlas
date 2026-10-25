@@ -1,7 +1,10 @@
 """atlas core: cards, checks, search, the generated pages. No terminal output here."""
-import datetime as dt, html, json, os, pathlib, re, secrets, shutil, subprocess, sys
+import ctypes
+import datetime as dt, html, json, os, pathlib, re, secrets, shutil, subprocess, sys, signal
 
 from . import history as H
+from .storage import locked, atomic_write, fsync_dir, read_text
+from functools import wraps
 
 ROOT = pathlib.Path(os.environ.get("ATLAS_DIR", pathlib.Path.home() / "Developer" / "atlas")).expanduser()
 CFG = json.loads((ROOT / "atlas.json").read_text())
@@ -20,31 +23,74 @@ def expand(p):
 
 # ---------- cards: a small, strict frontmatter format (key: value, lists as [a, b]) ----------
 
+def _parts(text, separator=None):
+    """Split commas/comments only outside quoted strings (also reads legacy plain values)."""
+    quote, escape, start, out = None, False, 0, []
+    for i, ch in enumerate(text):
+        if escape:
+            escape = False
+        elif quote and ch == "\\" and quote == '"':
+            escape = True
+        elif quote:
+            if ch == quote:
+                quote = None
+        elif ch in "'\"" and (i == 0 or text[i-1] in " \t[:,"):
+            quote = ch
+        elif separator and ch == separator:
+            out.append(text[start:i].strip())
+            start = i + 1
+        elif not separator and ch == "#" and i >= 2 and text[i-2:i] == "  ":
+            return text[:i].rstrip()
+    if separator:
+        out.append(text[start:].strip())
+        return out
+    return text.rstrip()
+
+
+def _scalar(text):
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "'\"":
+        if text[0] == '"':
+            try:
+                value = json.loads(text)
+                if isinstance(value, str):
+                    return value
+            except ValueError:
+                pass  # Old cards used surrounding quotes without JSON escapes.
+        return text[1:-1]
+    return text
+
+
 def parse(path):
-    text = path.read_text()
-    m = re.match(r"---\n(.*?)\n---\n?(.*)", text, re.S)
+    return parse_text(read_text(path), path)
+
+
+def parse_text(text, path):
+    """Parse a single captured version; `_raw` binds later writes to this exact snapshot."""
+    path = pathlib.Path(path)
+    m = re.match(r"---\r?\n(.*?)\r?\n---(?:\r?\n)?(.*)", text, re.S)
     if not m:
         raise ValueError(f"{path}: no frontmatter")
     meta = {}
     for line in m.group(1).splitlines():
-        line = line.split("  #", 1)[0].rstrip() if "  #" in line else line.rstrip()
+        line = _parts(line)
         if not line.strip() or line.lstrip().startswith("#"):
             continue
-        k, _, v = line.partition(":")
+        k, sep, v = line.partition(":")
+        if not sep or not k.strip():
+            raise ValueError(f"{path}: invalid frontmatter line {line!r}")
         v = v.strip()
         if v.startswith("[") and v.endswith("]"):
-            v = [x.strip().strip("'\"") for x in v[1:-1].split(",") if x.strip()]
+            v = [_scalar(x) for x in _parts(v[1:-1], ",") if x]
         else:
-            v = v.strip("'\"") if len(v) >= 2 and v[0] == v[-1] and v[0] in "'\"" else v
+            v = _scalar(v)
         meta[k.strip()] = v
-    for k in ("links", "notes"):
-        meta.setdefault(k, [])
-        if isinstance(meta[k], str):
+    for k in ("links", "notes", "aliases"):
+        if k in ("links", "notes"):
+            meta.setdefault(k, [])
+        if isinstance(meta.get(k), str):
             meta[k] = [meta[k]] if meta[k] else []
-    meta["_body"] = m.group(2)
-    meta["_path"] = path
-    meta["_slug"] = path.stem
-    meta["_personal"] = path.parent.name == "personal"
+    meta.update(_raw=text, _body=m.group(2), _path=path, _slug=path.stem,
+                _personal=path.parent.name == "personal")
     meta["_folder"] = path.parent.parent.name if meta["_personal"] else path.parent.name
     return meta
 
@@ -52,20 +98,24 @@ def parse(path):
 def dump(card):
     def val(v):
         if isinstance(v, list):
-            return "[" + ", ".join(f'"{x}"' if ("," in x or "[" in x) else x for x in v) + "]"
+            return json.dumps(v, ensure_ascii=False)
         v = str(v)
-        return f'"{v}"' if (v.startswith(("[", "{", "'", '"')) or ": " in v or " #" in v) else v
+        if v != v.strip() or any(ch in v for ch in "\n\r\t\\'\"[]{}") or ": " in v or " #" in v:
+            return json.dumps(v, ensure_ascii=False)
+        return v
     keys = FIELDS + [k for k in card if not k.startswith("_") and k not in FIELDS]
     head = "\n".join(f"{k}: {val(card[k])}".rstrip() for k in keys if k in card)
     return f"---\n{head}\n---\n{card.get('_body', '')}"
 
 
 def load(folders=("inbox", "cards", "retired")):
-    cards = []
-    for f in folders:
-        for p in sorted((ROOT / f).glob("*.md")) + sorted((ROOT / f / "personal").glob("*.md")):
-            cards.append(parse(p))
-    return cards
+    with locked(ROOT):
+        _recover_move()
+        cards = []
+        for f in folders:
+            for p in sorted((ROOT / f).glob("*.md")) + sorted((ROOT / f / "personal").glob("*.md")):
+                cards.append(parse(p))
+        return cards
 
 
 def ordered(cards):
@@ -91,7 +141,7 @@ def search(query, cards=None):
     title = [c for c in cards if all(w in (c["title"] + " " + c["_slug"]).lower() for w in words)]
     if title:
         return title
-    return [c for c in cards if all(w in c["_path"].read_text().lower() for w in words)]
+    return [c for c in cards if all(w in c["_raw"].lower() for w in words)]
 
 
 class NoMatch(Exception):
@@ -131,26 +181,54 @@ def state():
     return json.loads(STATE.read_text()) if STATE.is_file() else {}
 
 
-def run_checks(cards, on_each=None):
+def _kill_group(pid, sig):
+    try:
+        os.killpg(pid, sig)
+    except ProcessLookupError:
+        pass
+
+
+def run_checks(cards, on_each=None, accept_result=None):
     """Run each card's check; on_each(card, ok, out) after each one. Results go to .state/checks.json."""
-    st = state()
+    updates = {}
     for c in cards:
         cmd = c.get("check", "")
         if not cmd:
             continue
         try:
-            r = subprocess.run(cmd, shell=True, capture_output=True, text=True,
-                               timeout=CFG.get("check_timeout", 15), cwd=HOME)
-            ok, out = r.returncode == 0, (r.stdout + r.stderr).strip()
+            r = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 text=True, cwd=HOME, start_new_session=True)
+            try:
+                stdout, stderr = r.communicate(timeout=CFG.get("check_timeout", 15))
+            except BaseException:
+                _kill_group(r.pid, signal.SIGTERM)
+                try:
+                    r.communicate(timeout=0.2)
+                except BaseException:
+                    pass
+                finally:
+                    _kill_group(r.pid, signal.SIGKILL)
+                try:
+                    r.communicate(timeout=1)
+                except BaseException:
+                    # A broken communicate() must not prevent reaping the direct child,
+                    # nor replace the original cancellation/communication exception.
+                    r.wait(timeout=1)
+                raise
+            ok, out = r.returncode == 0, (stdout + stderr).strip()
         except subprocess.TimeoutExpired:
             ok, out = False, f"timed out after {CFG.get('check_timeout', 15)}s"
-        st[c["id"]] = {"ok": ok, "at": dt.datetime.now().isoformat(timespec="minutes"),
+        result = {"ok": ok, "at": dt.datetime.now().isoformat(timespec="minutes"),
                        "out": out.splitlines()[-1][:200] if out else ""}
+        if accept_result is None or accept_result(c, result):
+            updates[c["id"]] = result
         if on_each:
-            on_each(c, ok, st[c["id"]]["out"])
-    STATE.parent.mkdir(exist_ok=True)
-    STATE.write_text(json.dumps(st, indent=1) + "\n")
-    return st
+            on_each(c, ok, result["out"])
+    with locked(ROOT):
+        st = state()
+        st.update(updates)
+        atomic_write(STATE, json.dumps(st, indent=1) + "\n")
+        return st
 
 
 def status(c, st):
@@ -204,7 +282,8 @@ def host_name(h):
 
 
 def linkname(c):
-    return f"[[{c['_folder']}/{c['_slug']}|{c['title']}]]"
+    target = c["_path"].relative_to(ROOT).with_suffix("").as_posix()
+    return f"[[{target}|{c['title']}]]"
 
 
 def build_md(cards, st):
@@ -306,34 +385,76 @@ probe.src = url + "probe.gif?" + Date.now();
 def place(c, folder):
     """Where a card goes in `folder`, keeping it personal (out of git) if it was."""
     d = ROOT / folder / ("personal" if c["_personal"] else "")
-    d.mkdir(exist_ok=True)
+    d.mkdir(parents=True, exist_ok=True)
     return d / c["_path"].name
 
 
+class Conflict(ValueError):
+    """A safe refusal: reload the card before retrying."""
+
+
+def transaction(fn):
+    @wraps(fn)
+    def run(*args, **kwargs):
+        with locked(ROOT):
+            _recover_move()
+            return fn(*args, **kwargs)
+    return run
+
+
+def validate_snapshot(c):
+    path = c["_path"]
+    if not path.is_file() or c.get("_raw") != read_text(path):
+        raise Conflict("This card changed since it was read; reload it before retrying.")
+    if parse(path).get("id") != c.get("id"):
+        raise Conflict("The card identity changed; reload it before retrying.")
+
+
+def check_title(title, own_path=None):
+    key = title.strip().lower()
+    for other in load():
+        if other["_path"] == own_path:
+            continue
+        keys = [other["title"], other["_slug"], other.get("id", ""), *(other.get("aliases") or [])]
+        if key in [k.lower() for k in keys] or slugify(title) == other["_slug"]:
+            raise Conflict(f"A page called {title!r} already exists (or is an alias of {other['title']!r}).")
+
+
+@transaction
 def save(c, summary, by="cli", text=None):
-    """Write a card, keeping the version before and the new one in its history."""
-    H.ensure_base(ROOT, c.get("id"), c["_path"])
+    """Validate, preserve the preimage, and atomically replace under the inventory lock."""
+    validate_snapshot(c)
     text = dump(c) if text is None else text
-    c["_path"].write_text(text)
+    parsed = parse_text(text, c["_path"])
+    if parsed.get("id") != c.get("id"):
+        raise ValueError("A save cannot change the card ID.")
+    if parsed.get("title") != parse(c["_path"]).get("title"):
+        check_title(parsed["title"], c["_path"])
+    H.ensure_base(ROOT, c.get("id"), c["_path"])
+    atomic_write(c["_path"], text)
     H.record(ROOT, c.get("id"), text, summary, by)
+    c.clear()
+    c.update(parsed)
 
 
+@transaction
 def new_card(title, kind, host, personal=False, confidence="believed", body=None, by="cli", summary="created", **fields):
+    check_title(title)
     slug = slugify(title)
     if not slug:
         raise ValueError("a card needs a title with letters or digits")
     if any(c["_slug"] == slug for c in load()):
         raise ValueError(f"a card named {slug} already exists")
     path = ROOT / "inbox" / ("personal" if personal else "") / f"{slug}.md"
-    path.parent.mkdir(exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     tpl = parse(ROOT / "templates" / "card.md")
     card = {k: tpl.get(k, "") for k in FIELDS}
     card.update(id="a-" + secrets.token_hex(3), title=title, kind=kind, host=host, confidence=confidence,
                 confirmed="", links=fields.pop("links", []) or [], notes=[])
     card.update({k: v for k, v in fields.items() if v})
     card["_body"] = tpl["_body"] if body is None else body
-    path.write_text(dump(card))
-    H.record(ROOT, card["id"], path.read_text(), summary, by)
+    atomic_write(path, dump(card))
+    H.record(ROOT, card["id"], read_text(path), summary, by)
     return parse(path)
 
 
@@ -351,12 +472,222 @@ def promote(c, force=False, by="cli"):
     c["confirmed"] = TODAY.isoformat()
     if c.get("confidence") in ("", "guess") and not missing:
         c["confidence"] = "confirmed"
-    H.ensure_base(ROOT, c["id"], c["_path"])
-    dest = place(c, "cards")
-    dest.write_text(dump(c))
-    c["_path"].unlink()
-    H.record(ROOT, c["id"], dest.read_text(), "promoted from the inbox to the map", by, force=True)
+    dest = _move(c, "cards", "promoted from the inbox to the map", by)
     return dest, None
+
+
+def move_destination(c, folder, personal=None):
+    dest = ROOT / folder / ("personal" if (c["_personal"] if personal is None else personal) else "") / c["_path"].name
+    if dest != c["_path"] and dest.exists():
+        raise Conflict(f"Destination already exists: {dest.relative_to(ROOT)}; no cards were changed.")
+    return dest
+
+
+def _identity(path):
+    st = path.stat()
+    return [st.st_dev, st.st_ino]
+
+
+def _move_path(name, staged=False):
+    """Journal paths are confined to actual inventory card directories, without symlinks."""
+    if not isinstance(name, str):
+        raise ValueError("invalid move path")
+    rel = pathlib.PurePosixPath(name)
+    if (rel.is_absolute() or len(rel.parts) not in (2, 3) or rel.parts[0] not in FOLDERS or
+            (len(rel.parts) == 3 and rel.parts[1] != 'personal') or
+            '..' in rel.parts or rel.as_posix() != name):
+        raise ValueError("move path escapes card directories")
+    if staged:
+        if not re.fullmatch(r'\.atlas-move-[0-9a-f]{32}', rel.name):
+            raise ValueError("invalid move staging path")
+    elif not rel.name.endswith('.md') or rel.name.startswith('.'):
+        raise ValueError("invalid move card path")
+    path = ROOT / name
+    if path.resolve() != ROOT.resolve() / name:
+        raise ValueError("symlink in move path")
+    return path
+
+
+def _move_matches(path, identity, text):
+    return (not path.is_symlink() and path.is_file() and _identity(path) == identity and
+            read_text(path) == text)
+
+
+def _claim_path(name, card_path, leaf):
+    """Claims live in private, exclusively created directories on the card filesystem."""
+    if not isinstance(name, str):
+        raise ValueError("invalid move claim")
+    path = ROOT / name
+    if (path.parent.parent != card_path.parent or path.name != leaf or
+            not re.fullmatch(r'\.atlas-claim-[0-9a-f]{32}', path.parent.name) or
+            path.relative_to(ROOT).as_posix() != name or
+            path.resolve() != ROOT.resolve() / name or not path.parent.is_dir()):
+        raise ValueError("invalid or escaping move claim")
+    return path
+
+
+def _read_move():
+    """Validate durable intent and existing files; unknown artifacts always fail closed."""
+    journal = ROOT / '.state/move.json'
+    try:
+        j = json.loads(read_text(journal))
+        if j['version'] != 2 or not re.fullmatch(r'a-[0-9a-f]{6}', j['id']):
+            raise ValueError("invalid move version or card ID")
+        source, dest, stage = (_move_path(j['source']), _move_path(j['dest']), _move_path(j['stage'], True))
+        claim = _claim_path(j['source_claim'], source, 'source')
+        rollback = _claim_path(j['dest_claim'], dest, 'destination')
+        if source == dest or stage.parent != dest.parent or j['phase'] != 'move':
+            raise ValueError("invalid move destinations or pending rollback")
+        for key in ('before', 'after', 'summary', 'by', 'at'):
+            if not isinstance(j[key], str):
+                raise ValueError("invalid move fields")
+        for key in ('source_identity', 'stage_identity'):
+            if not isinstance(j[key], list) or len(j[key]) != 2 or not all(type(n) is int for n in j[key]):
+                raise ValueError("invalid move identity")
+        if any(parse_text(j[key], source).get('id') != j['id'] for key in ('before', 'after')):
+            raise ValueError("move card ID changed")
+        if not _move_matches(stage, j['stage_identity'], j['after']):
+            raise ValueError("move staging file changed")
+        if os.path.lexists(rollback):
+            raise ValueError("unexpected rollback claim")
+        if os.path.lexists(claim):
+            if not _move_matches(claim, j['source_identity'], j['before']) or os.path.lexists(source):
+                raise ValueError("move source claim changed or original name recreated")
+        elif not _move_matches(source, j['source_identity'], j['before']):
+            raise ValueError("move source changed or missing")
+        if dest.exists() and not _move_matches(dest, j['stage_identity'], j['after']):
+            raise ValueError("move destination changed or already owned")
+        return j, source, dest, stage, claim, rollback
+    except (OSError, ValueError, KeyError, TypeError) as ex:
+        raise Conflict(f"Interrupted card move needs reconciliation; no unknown files were removed: {ex}") from ex
+
+
+def _clear_move(stage):
+    # Retain stage and claims: an outside editor can still hold any inode open.
+    journal = ROOT / '.state/move.json'
+    journal.unlink()
+    fsync_dir(journal.parent)
+
+
+def _rename_claim(source, claim):
+    """Atomic rename without replacement, including a concurrent claim collision."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    if sys.platform == 'darwin':
+        rename = libc.renamex_np
+        rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+        args = (os.fsencode(source), os.fsencode(claim), 0x00000004)  # RENAME_EXCL
+    elif sys.platform.startswith('linux') and hasattr(libc, 'renameat2'):
+        rename = libc.renameat2
+        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        args = (-100, os.fsencode(source), -100, os.fsencode(claim), 1)  # AT_FDCWD, RENAME_NOREPLACE
+    else:
+        raise Conflict("Atomic exclusive rename unavailable; move needs reconciliation.")
+    rename.restype = ctypes.c_int
+    if rename(*args):
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), str(source), None, str(claim))
+
+
+def _claim_file(path, claim):
+    # The precheck is diagnostic only; exclusive rename enforces ownership.
+    # Claims are journaled before capture and retained even after validation.
+    if os.path.lexists(claim):
+        raise Conflict(f"Move claim already occupied; needs reconciliation: {claim}")
+    _rename_claim(path, claim)
+    fsync_dir(claim.parent)
+    fsync_dir(path.parent)
+
+
+def _restore_claim(claim, path):
+    # Keep the backup and exclusively publish the captured inode. A newer original
+    # name always wins. No unlink/replace follows a content or ownership check.
+    if claim.is_symlink() or not claim.is_file():
+        raise Conflict(f"Unknown move claim retained for reconciliation: {claim}")
+    try:
+        os.link(claim, path, follow_symlinks=False)
+    except FileExistsError:
+        pass
+    fsync_dir(path.parent)
+
+
+def _rollback_move(j, source, dest, stage, claim, rollback):
+    # Persist this first: a crash during rollback must never replay forward intent.
+    j['phase'] = 'rollback'
+    atomic_write(ROOT / '.state/move.json', json.dumps(j, ensure_ascii=False))
+    if os.path.lexists(claim):
+        _restore_claim(claim, source)
+    if os.path.lexists(dest):
+        _claim_file(dest, rollback)
+        if not _move_matches(rollback, j['stage_identity'], j['after']):
+            _restore_claim(rollback, dest)
+            raise Conflict("Move rollback captured a changed destination; retained for reconciliation.")
+    if (not _move_matches(source, j['source_identity'], j['before']) or
+            (os.path.lexists(claim) and not _move_matches(claim, j['source_identity'], j['before']))):
+        raise Conflict("Move captured an external source edit; backups retained for reconciliation.")
+    _clear_move(stage)
+
+
+def _recover_move():
+    """Finish one inventory-locked move without ever unlinking a card inode."""
+    if not (ROOT / '.state/move.json').exists():
+        return
+    j, source, dest, stage, claim, rollback = _read_move()
+    try:
+        if not dest.exists():
+            os.link(stage, dest)
+            fsync_dir(dest.parent)
+        if not os.path.lexists(claim):
+            _claim_file(source, claim)
+        # Validate the inode actually removed from the original name, rather than
+        # checking the name and subsequently deleting whatever an editor put there.
+        if not _move_matches(claim, j['source_identity'], j['before']) or os.path.lexists(source):
+            raise Conflict("Move source changed at claim boundary; needs reconciliation.")
+    except Exception:
+        _rollback_move(j, source, dest, stage, claim, rollback)
+        raise
+    old = H.entries(ROOT, j['id'])
+    entry = {k: j[k] for k in ('at', 'by', 'summary')}
+    entry['text'] = j['after']
+    if not old or any(old[-1].get(k) != v for k, v in entry.items()):
+        H.record(ROOT, j['id'], j['after'], j['summary'], j['by'], at=j['at'], force=True)
+    _clear_move(stage)
+
+
+@transaction
+def _move(c, folder, summary, by, personal=None):
+    validate_snapshot(c)
+    dest = move_destination(c, folder, personal)
+    if dest == c["_path"]:
+        return dest
+    source = c['_path']
+    # Validate path scope before creating any move artifacts.
+    _move_path(str(source.relative_to(ROOT)))
+    _move_path(str(dest.relative_to(ROOT)))
+    source_identity = _identity(source)
+    H.ensure_base(ROOT, c.get("id"), source)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    text = dump(c)
+    stage = dest.parent / ('.atlas-move-' + secrets.token_hex(16))
+    atomic_write(stage, text)
+    stage.chmod(source.stat().st_mode & 0o777)
+    with stage.open('rb') as stream:
+        os.fsync(stream.fileno())
+    claims = []
+    for path, leaf in ((source, 'source'), (dest, 'destination')):
+        directory = path.parent / ('.atlas-claim-' + secrets.token_hex(16))
+        directory.mkdir(mode=0o700)
+        fsync_dir(path.parent)
+        claims.append(str((directory / leaf).relative_to(ROOT)))
+    journal = {'version': 2, 'phase': 'move', 'source_claim': claims[0], 'dest_claim': claims[1], 'id': c['id'], 'source': str(source.relative_to(ROOT)),
+               'dest': str(dest.relative_to(ROOT)), 'stage': str(stage.relative_to(ROOT)),
+               'source_identity': source_identity, 'stage_identity': _identity(stage),
+               'before': c['_raw'], 'after': text, 'summary': summary, 'by': by, 'at': H.now()}
+    atomic_write(ROOT / '.state/move.json', json.dumps(journal, ensure_ascii=False))
+    _recover_move()
+    parsed = parse(dest)
+    c.clear()
+    c.update(parsed)
+    return dest
 
 
 def confirm(c, by="cli"):
@@ -365,40 +696,26 @@ def confirm(c, by="cli"):
 
 
 def retire(c, reason="", by="cli"):
-    H.ensure_base(ROOT, c.get("id"), c["_path"])
+    if c["_folder"] == "retired":
+        return c["_path"]
     c["retired"] = TODAY.isoformat()
     c["retired_reason"] = reason
-    dest = place(c, "retired")
-    dest.write_text(dump(c))
-    c["_path"].unlink()
-    H.record(ROOT, c.get("id"), dest.read_text(), "retired" + (f": {reason}" if reason else ""), by, force=True)
-    return dest
+    return _move(c, "retired", "retired" + (f": {reason}" if reason else ""), by)
 
 
 def unretire(c, by="cli"):
-    """retired -> inbox, as a draft to confirm again."""
     if c["_folder"] != "retired":
         return None
-    H.ensure_base(ROOT, c.get("id"), c["_path"])
     for k in ("retired", "retired_reason"):
         c.pop(k, None)
-    dest = place(c, "inbox")
-    dest.write_text(dump(c))
-    c["_path"].unlink()
-    H.record(ROOT, c.get("id"), dest.read_text(), "brought back from retired, as a draft", by, force=True)
-    return dest
+    return _move(c, "inbox", "brought back from retired, as a draft", by)
 
 
 def set_personal(c, want=True, by="cli"):
     if c["_personal"] == want:
         return None
-    H.ensure_base(ROOT, c.get("id"), c["_path"])
-    c["_personal"] = want
-    dest = place(c, c["_folder"])
-    c["_path"].rename(dest)
-    H.record(ROOT, c.get("id"), dest.read_text(),
-             "made personal: this Mac only, out of git" if want else "shared: goes to git with the other cards", by, force=True)
-    return dest
+    return _move(c, c["_folder"], "made personal: this Mac only, out of git" if want else
+                 "shared: goes to git with the other cards", by, personal=want)
 
 
 def lint():

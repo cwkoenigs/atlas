@@ -1,0 +1,269 @@
+[
+  {
+    "number": 1,
+    "priority": "P1",
+    "title": "Reject retirement of an already-retired card",
+    "fix": "Retirement returns the existing retired path without rewriting or unlinking it.",
+    "tests": [
+      "tests.test_review.ReviewTests.test_01_repeat_retire"
+    ]
+  },
+  {
+    "number": 2,
+    "priority": "P1",
+    "title": "Quote scanned paths as literal shell arguments",
+    "fix": "Scan commands use shlex.quote on resolved absolute paths; executable and argument remain separate shell tokens.",
+    "tests": [
+      "tests.test_review.ReviewTests.test_02_literal_scan_paths"
+    ]
+  },
+  {
+    "number": 3,
+    "priority": "P1",
+    "title": "Refuse to overwrite another card during moves",
+    "fix": "Lifecycle moves validate source snapshots and refuse destination collisions under the inventory lock; wiki edit/share checks the destination before saving.",
+    "tests": [
+      "tests.test_review.ReviewTests.test_03_lifecycle_collisions",
+      "tests.test_review.ReviewTests.test_03_edit_share_collision_is_unchanged"
+    ]
+  },
+  {
+    "number": 4,
+    "priority": "P1",
+    "title": "Make card updates transactional across CLI and wiki",
+    "fix": "Shared reentrant flock/RLock transactions, exact raw preimage validation, locked inventory reads, atomic fsync/replace writes, and friendly CLI/HTTP conflicts. Lifecycle source removal and destination rollback use durable, exclusive-rename claims; claimed inodes are retained and actual captured identities and contents are validated.",
+    "tests": [
+      "tests.test_review.ReviewTests.test_04_stale_process_and_atomic_save",
+      "tests.test_review.ReviewTests.test_04_simultaneous_writers",
+      "tests.test_review.ReviewTests.test_04_promotion_rejects_edit_during_check",
+      "tests.test_review.ReviewTests.test_04_load_serializes_with_lifecycle_move",
+      "tests.test_review.ReviewTests.test_04_cli_reports_safe_conflicts",
+      "tests.test_review.ReviewTests.test_04_wiki_and_cli_race",
+      "tests.test_review.ReviewTests.test_04_atomic_replace_failure_preserves_file",
+      "tests.test_move_claim.MoveClaimTests.test_atomic_editor_after_destination_publication",
+      "tests.test_move_claim.MoveClaimTests.test_recovery_atomic_editor_after_destination_publication",
+      "tests.test_move_claim.MoveClaimTests.test_source_replaced_before_claim",
+      "tests.test_move_claim.MoveClaimTests.test_claim_replaced_after_rename",
+      "tests.test_move_claim.MoveClaimTests.test_rollback_never_overwrites_new_original",
+      "tests.test_move_claim.MoveClaimTests.test_original_created_after_claim_is_preserved",
+      "tests.test_move_claim.MoveClaimTests.test_rollback_claims_replaced_destination_without_deleting_it",
+      "tests.test_move_claim.MoveClaimTests.test_open_fd_edit_after_claim_validation_keeps_inode",
+      "tests.test_move_claim.MoveClaimTests.test_crash_after_claim_before_history_recovers",
+      "tests.test_move_claim.MoveClaimTests.test_claim_path_cannot_escape_inventory",
+      "tests.test_move_claim.MoveClaimTests.test_claim_occupied_at_rename_is_never_overwritten",
+      "tests.test_move_claim.MoveClaimTests.test_recovery_retains_changed_claim_for_reconciliation",
+      "tests.test_move_claim.MoveClaimTests.test_reader_waits_while_source_is_claimed"
+    ]
+  },
+  {
+    "number": 5,
+    "priority": "P1",
+    "title": "Preserve the current external version before every mutation",
+    "fix": "ensure_base compares every on-disk preimage with the last history text before any supported mutation.",
+    "tests": [
+      "tests.test_review.ReviewTests.test_05_external_preimage",
+      "tests.test_review.ReviewTests.test_06_raw_crlf_preimage"
+    ]
+  },
+  {
+    "number": 6,
+    "priority": "P2",
+    "title": "Make frontmatter encoding and parsing lossless",
+    "fix": "In-memory quote-aware parsing and symmetric JSON string/list encoding retain quotes, commas, comments, backslashes, whitespace, and line endings; legacy plain/comment cards remain readable.",
+    "tests": [
+      "tests.test_review.ReviewTests.test_06_frontmatter_roundtrip",
+      "tests.test_review.ReviewTests.test_06_raw_crlf_preimage",
+      "tests.test_review.ReviewTests.test_06_plain_apostrophe_comments"
+    ]
+  },
+  {
+    "number": 7,
+    "priority": "P2",
+    "title": "Validate card IDs before constructing history paths",
+    "fix": "History path construction validates the documented ID format and checks resolved path containment, including symlinks.",
+    "tests": [
+      "tests.test_review.ReviewTests.test_07_history_ids"
+    ]
+  },
+  {
+    "number": 8,
+    "priority": "P2",
+    "title": "Repair unterminated history tails before appending",
+    "fix": "Locked atomic history replacement preserves valid unterminated entries and quarantines incomplete tails, including partial UTF-8; complete corrupt records and invalid writer fields fail closed.",
+    "tests": [
+      "tests.test_review.ReviewTests.test_08_history_tails",
+      "tests.test_review.ReviewTests.test_08_history_concurrent_append",
+      "tests.test_review.ReviewTests.test_08_partial_utf8_tail_is_quarantined",
+      "tests.test_review.ReviewTests.test_08_history_invalid_entry_rejected"
+    ]
+  },
+  {
+    "number": 9,
+    "priority": "P2",
+    "title": "Parse revision text without a shared temporary file",
+    "fix": "Revision rendering uses core.parse_text in memory and never writes rev.md.",
+    "tests": [
+      "tests.test_review.ReviewTests.test_09_revision_in_memory"
+    ]
+  },
+  {
+    "number": 10,
+    "priority": "P2",
+    "title": "Merge check results atomically across processes",
+    "fix": "Checks run outside the inventory lock, then merge only accepted updates into fresh state atomically; blocked wiki results never enter the commit.",
+    "tests": [
+      "tests.test_review.ReviewTests.test_10_check_process_merge",
+      "tests.test_review.ReviewTests.test_10_blocked_check_keeps_concurrent_success"
+    ]
+  },
+  {
+    "number": 11,
+    "priority": "P2",
+    "title": "Bind edit conflict tokens to the rendered snapshot",
+    "fix": "The edit token is derived from the parsed card's retained raw snapshot; conflict checking and saving occur under the common transaction lock.",
+    "tests": [
+      "tests.test_review.ReviewTests.test_11_rendered_snapshot_token"
+    ]
+  },
+  {
+    "number": 12,
+    "priority": "P2",
+    "title": "Drain active mutations before stopping the server",
+    "fix": "Server admission tracks accepted mutations and snapshot history-sync writes, rejects new writers when stopping, and drains accepted writers without waiting for idle request readers.",
+    "tests": [
+      "tests.test_server.ServerTests.test_12_shutdown_drains_mutation_ignores_idle",
+      "tests.test_server.ServerTests.test_12_shutdown_drains_get_history_sync",
+      "tests.test_server.ServerTests.test_12_no_new_history_writers_after_shutdown"
+    ]
+  },
+  {
+    "number": 13,
+    "priority": "P2",
+    "title": "Create parent directories for personal-card destinations",
+    "fix": "All lifecycle/new-card destination directory creation includes parents=True.",
+    "tests": [
+      "tests.test_review.ReviewTests.test_13_personal_parent_directories"
+    ]
+  },
+  {
+    "number": 14,
+    "priority": "P2",
+    "title": "Preserve comma-containing titles in related-page forms",
+    "fix": "Related-page form values retain stable IDs; complete comma-containing titles resolve before CSV parsing, with quoted CSV names supported.",
+    "tests": [
+      "tests.test_review.ReviewTests.test_14_related_comma_title"
+    ]
+  },
+  {
+    "number": 15,
+    "priority": "P2",
+    "title": "Reject title collisions when renaming pages",
+    "fix": "A locked fresh namespace check rejects title/alias/ID/slug ownership collisions on saves, renames, creation, and historical restore; unique renames retain the old title as an alias.",
+    "tests": [
+      "tests.test_review.ReviewTests.test_15_rename_collision",
+      "tests.test_review.ReviewTests.test_15_restore_rejects_name_collision"
+    ]
+  },
+  {
+    "number": 16,
+    "priority": "P2",
+    "title": "Terminate check descendants when a timeout expires",
+    "fix": "Each check starts a process group; timeout sends group TERM followed by bounded group KILL and reaps the shell.",
+    "tests": [
+      "tests.test_review.ReviewTests.test_16_check_process_group_timeout"
+    ]
+  },
+  {
+    "number": 17,
+    "priority": "P2",
+    "title": "Validate requests against the server's bound port",
+    "fix": "Host/Origin checks and health responses use server_port, not mutable config. Socket-bound metadata enables old-port discovery, restart, and stop; stop waits for process exit and reports drain timeout accurately.",
+    "tests": [
+      "tests.test_server.ServerTests.test_17_bound_host_and_origin",
+      "tests.test_server.ServerTests.test_17_discover_old_port_restart_and_stop",
+      "tests.test_server.ServerTests.test_17_cli_stop_reports_drain_timeout"
+    ]
+  },
+  {
+    "number": 18,
+    "priority": "P2",
+    "title": "Honor the no-check option before executing commands",
+    "fix": "--no-check prevents automatic and explicit --check execution on both map and today.",
+    "tests": [
+      "tests.test_review.ReviewTests.test_18_no_check_precedence"
+    ]
+  },
+  {
+    "number": 19,
+    "priority": "P2",
+    "title": "Handle empty inventories and scan results",
+    "fix": "Display width calculations use defaults for empty active inventories and empty scan results.",
+    "tests": [
+      "tests.test_review.ReviewTests.test_19_empty_inventory_and_scan"
+    ]
+  },
+  {
+    "number": 20,
+    "priority": "P2",
+    "title": "Split editor commands into executable and arguments",
+    "fix": "EDITOR is split with shlex.split; the card path is appended as a distinct argument.",
+    "tests": [
+      "tests.test_review.ReviewTests.test_20_editor_arguments"
+    ]
+  },
+  {
+    "number": 21,
+    "priority": "P2",
+    "title": "Seed the interactive new-card form from supplied flags",
+    "fix": "Every interactive field is initialized from parsed flags and --link survives form submission.",
+    "tests": [
+      "tests.test_review.ReviewTests.test_21_interactive_flags"
+    ]
+  },
+  {
+    "number": 22,
+    "priority": "P2",
+    "title": "Bound directory traversal before materializing file paths",
+    "fix": "A lazy file iterator is capped with islice before Path-list materialization and prunes dependency/cache directories.",
+    "tests": [
+      "tests.test_review.ReviewTests.test_22_bounded_scan_traversal",
+      "tests.test_review.ReviewTests.test_22_prunes_dependency_trees"
+    ]
+  },
+  {
+    "number": 23,
+    "priority": "P2",
+    "title": "Retain personal directories in generated Markdown links",
+    "fix": "Markdown targets derive from the complete root-relative card path with only the extension removed.",
+    "tests": [
+      "tests.test_review.ReviewTests.test_23_personal_markdown_links"
+    ]
+  },
+  {
+    "number": 24,
+    "priority": "P2",
+    "title": "Associate recent Git changes across filename renames",
+    "fix": "Recent events use per-card git log --follow, retaining association through multiple filename renames.",
+    "tests": [
+      "tests.test_review.ReviewTests.test_24_recent_changes_follow_renames"
+    ]
+  },
+  {
+    "number": 25,
+    "priority": "P2",
+    "title": "Resolve complete page names before stripping path prefixes",
+    "fix": "Resolution tries the complete name first and only strips a recognized cards/inbox/retired path prefix as a fallback.",
+    "tests": [
+      "tests.test_review.ReviewTests.test_25_complete_slash_page_names"
+    ]
+  },
+  {
+    "number": 26,
+    "priority": "P3",
+    "title": "Invalidate pending suggestions when dismissing search",
+    "fix": "Clear/Escape/outside dismissal invalidate sequence tokens and pending timers; responses recheck sequence after fetch and after JSON completion.",
+    "tests": [
+      "tests.test_review.ReviewTests.test_26_suggestion_cancellation"
+    ]
+  }
+]

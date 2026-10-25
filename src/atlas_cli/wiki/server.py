@@ -10,6 +10,7 @@ Origin must be this server. Pages are rendered with markdown's raw HTML off and 
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -27,6 +28,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .. import core as A
+from ..storage import locked, atomic_write
 from . import actions as X
 from . import render as R
 from . import views as V
@@ -65,6 +67,48 @@ def page_path(c) -> str:
 
 # ── the server ───────────────────────────────────────────────────────────────
 
+class Stopping(RuntimeError):
+    pass
+
+
+class WikiServer(ThreadingHTTPServer):
+    """Only admitted mutations delay shutdown; idle HTTP readers remain daemon workers."""
+    daemon_threads = True
+
+    def __init__(self, *args, **kwargs):
+        self.instance = secrets.token_hex(16)
+        self.writes = threading.Condition()
+        self.active_writes = 0
+        self.stopping = False
+        super().__init__(*args, **kwargs)
+
+    @contextmanager
+    def mutation(self):
+        with self.writes:
+            if self.stopping:
+                raise Stopping("The wiki is stopping; reload after it restarts.")
+            self.active_writes += 1
+        try:
+            yield
+        finally:
+            with self.writes:
+                self.active_writes -= 1
+                self.writes.notify_all()
+
+    def stop_mutations(self):
+        with self.writes:
+            self.stopping = True
+
+    def drain(self):
+        self.stop_mutations()
+        with self.writes:
+            self.writes.wait_for(lambda: self.active_writes == 0)
+
+    def stop(self):
+        self.stop_mutations()
+        self.shutdown()
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "atlas-wiki"
     sys_version = ""
@@ -73,7 +117,7 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def _host_ok(self) -> bool:
-        return self.headers.get("Host", "") in (f"localhost:{port()}", f"127.0.0.1:{port()}")
+        return self.headers.get("Host", "") in (f"localhost:{self.server.server_port}", f"127.0.0.1:{self.server.server_port}")
 
     def _send(self, status: int, body: bytes, ctype: str, nonce: str = "", extra: dict | None = None):
         self.send_response(status)
@@ -81,7 +125,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Referrer-Policy", "same-origin")
         self.send_header("X-Frame-Options", "DENY")
         if ctype.startswith("text/html"):
             self.send_header("Content-Security-Policy",
@@ -117,7 +161,7 @@ class Handler(BaseHTTPRequestHandler):
         with log.open("a") as f:
             f.write(f"--- {time.strftime('%Y-%m-%d %H:%M:%S')} {self.command} {self.path}\n{traceback.format_exc()}\n")
         try:
-            snap = R.Snap()
+            snap = self._snapshot()
             self._page(snap, ("Something broke", '<div class="titlebar"><h1>Something broke</h1></div>'
                               f'<p class="lead">The wiki hit an error: <code>{R.e(type(ex).__name__)}: {R.e(ex)}</code>. '
                               'The details are in <code>.state/wiki.log</code> in the atlas folder.</p>', "", ""), 500)
@@ -132,6 +176,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._plain(421, "atlas wiki answers only to localhost")
         try:
             self._get()
+        except Stopping as ex:
+            self._plain(503, str(ex))
         except Exception as ex:                     # one bad page must not take the wiki down
             self._error(ex)
 
@@ -139,7 +185,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._host_ok():
             return self._plain(421, "atlas wiki answers only to localhost")
         origin = self.headers.get("Origin")
-        if origin and origin not in (f"http://localhost:{port()}", f"http://127.0.0.1:{port()}"):
+        if origin and origin not in (f"http://localhost:{self.server.server_port}", f"http://127.0.0.1:{self.server.server_port}"):
             return self._plain(403, "atlas wiki refuses forms posted from other sites")
         if self.headers.get("Sec-Fetch-Site") not in (None, "same-origin", "none"):
             return self._plain(403, "atlas wiki refuses forms posted from other sites")
@@ -149,15 +195,28 @@ class Handler(BaseHTTPRequestHandler):
         raw = self.rfile.read(n).decode("utf-8", "replace")
         form = {k: v[0] for k, v in urllib.parse.parse_qs(raw, keep_blank_values=True).items()}
         if not secrets.compare_digest(form.get("token", ""), TOKEN):
-            snap = R.Snap()
+            try:
+                snap = self._snapshot()
+            except Stopping as ex:
+                return self._plain(503, str(ex))
             return self._page(snap, ("Reload the page", '<div class="titlebar"><h1>Reload the page</h1></div>'
                                      '<p class="lead">That page was opened before the wiki restarted, so its form is out of date. '
                                      'Go back, reload it, and try again. Nothing was changed.</p>', "", ""), 403)
         try:
-            with WRITE:
-                self._post(form)
+            with self.server.mutation():
+                with WRITE:
+                    self._post(form)
+        except Stopping as ex:
+            self._plain(503, str(ex))
+        except A.Conflict as ex:
+            self._plain(409, str(ex))
         except Exception as ex:
             self._error(ex)
+
+    def _snapshot(self):
+        # A snapshot synchronizes external edits into history; drain just this write window.
+        with self.server.mutation():
+            return R.Snap()
 
     # GET routes
     def _get(self):
@@ -165,11 +224,11 @@ class Handler(BaseHTTPRequestHandler):
         path = urllib.parse.unquote(u.path)
         qs = {k: v[0] for k, v in urllib.parse.parse_qs(u.query, keep_blank_values=True).items()}
         if path == "/healthz":
-            body = json.dumps({"app": "atlas-wiki", "version": VERSION, "pid": os.getpid(), "root": str(A.ROOT)})
+            body = json.dumps({"app": "atlas-wiki", "version": VERSION, "pid": os.getpid(), "root": str(A.ROOT), "port": self.server.server_port, "instance": self.server.instance})
             return self._send(200, body.encode(), "application/json")
         if path == "/probe.gif":
             return self._send(200, GIF, "image/gif")
-        snap = R.Snap()
+        snap = self._snapshot()
         snap.notice = FLASH.pop(qs.get("n", ""), "")
         if path == "/api/suggest":
             return self._send(200, json.dumps(V.suggest(snap, qs.get("q", ""))).encode(), "application/json")
@@ -196,7 +255,7 @@ class Handler(BaseHTTPRequestHandler):
             if tab == "edit":
                 sec = qs.get("section")
                 section = int(sec) if sec and sec.isdigit() else None
-                return self._page(snap, V.edit(snap, c, section=section, base=X.digest(c["_path"].read_text())))
+                return self._page(snap, V.edit(snap, c, section=section, base=X.digest(c["_raw"])))
             if tab == "history":
                 return self._page(snap, V.history(snap, c))
             if tab == "links":
@@ -254,25 +313,51 @@ def _blank_new() -> dict:
 
 def serve() -> None:
     R.TOKEN = TOKEN
-    srv = ThreadingHTTPServer(("127.0.0.1", port()), Handler)
-    srv.daemon_threads = True
-    signal.signal(signal.SIGTERM, lambda *a: threading.Thread(target=srv.shutdown, daemon=True).start())
+    A.load()  # Complete any interrupted lifecycle move before admitting requests.
+    srv = WikiServer(("127.0.0.1", port()), Handler)
+    metadata = {"app": "atlas-wiki", "version": VERSION, "pid": os.getpid(),
+                "root": str(A.ROOT), "port": srv.server_port, "instance": srv.instance}
+    with locked(A.ROOT):
+        atomic_write(A.ROOT / ".state/wiki-server.json", json.dumps(metadata))
+    signal.signal(signal.SIGTERM, lambda *a: threading.Thread(target=srv.stop, daemon=True).start())
     print(f"atlas wiki on {url()} (pid {os.getpid()}, code {VERSION})", flush=True)
     try:
         srv.serve_forever()
     finally:
+        srv.drain()
         srv.server_close()
+        with locked(A.ROOT):
+            path = A.ROOT / ".state/wiki-server.json"
+            if path.is_file() and json.loads(path.read_text()) == metadata:
+                atomic_write(path, json.dumps({**metadata, "stopped": True}))
 
 
 # ── starting and stopping it from the CLI ────────────────────────────────────
 
-def health(timeout: float = 0.6) -> dict | None:
+def _probe(bound_port, timeout):
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port()}/healthz", timeout=timeout) as r:
+        with urllib.request.urlopen(f"http://127.0.0.1:{bound_port}/healthz", timeout=timeout) as r:
             data = json.loads(r.read())
-            return data if data.get("app") == "atlas-wiki" else {"app": "other"}
-    except Exception:
+            return {**data, "port": bound_port} if data.get("app") == "atlas-wiki" else {"app": "other"}
+    except (OSError, ValueError):
         return None
+
+
+def health(timeout: float = 0.6) -> dict | None:
+    """Discover this inventory's existing listener even after wiki_port changes."""
+    path = A.ROOT / ".state/wiki-server.json"
+    if path.is_file():
+        try:
+            meta = json.loads(path.read_text())
+            bound = int(meta["port"])
+            if not 1 <= bound <= 65535:
+                raise ValueError("invalid port")
+        except (ValueError, KeyError, TypeError) as ex:
+            raise RuntimeError(f"Invalid wiki server metadata: {ex}") from ex
+        old = _probe(bound, timeout)
+        if old and old.get("root") == str(A.ROOT) and old.get("pid") == meta.get("pid"):
+            return old
+    return _probe(port(), timeout)
 
 
 def start(wait: bool = True) -> int:
@@ -299,15 +384,28 @@ def stop() -> bool:
     h = health()
     if not h or h.get("app") != "atlas-wiki":
         return False
+    if h.get("root") != str(A.ROOT):
+        raise RuntimeError("That wiki serves another inventory; it was not stopped.")
     try:
         os.kill(int(h["pid"]), signal.SIGTERM)
     except ProcessLookupError:
         return False
-    for _ in range(40):
+    for _ in range(80):
         time.sleep(0.1)
-        if not health(0.3):
+        # The listener can disappear while writes drain, and an exited server can remain
+        # an unreaped zombie. Only this instance's post-drain/post-close marker suffices.
+        try:
+            meta = json.loads((A.ROOT / ".state/wiki-server.json").read_text())
+            if (h.get("instance") and meta.get("stopped") is True and
+                    all(meta.get(key) == h.get(key) for key in ("app", "root", "pid", "port", "instance"))):
+                return True
+        except (OSError, ValueError):
+            pass
+        try:
+            os.kill(int(h["pid"]), 0)
+        except ProcessLookupError:
             return True
-    return True
+    raise RuntimeError("The wiki is still draining active writes; it has not stopped yet.")
 
 
 def ensure(wait: bool = True) -> str:
@@ -315,12 +413,14 @@ def ensure(wait: bool = True) -> str:
     h = health()
     if h and h.get("app") != "atlas-wiki":
         raise RuntimeError(f"port {port()} is used by something else; set wiki_port in atlas.json")
-    if h and h.get("version") == VERSION and h.get("root") == str(A.ROOT):
+    if h and h.get("root") != str(A.ROOT):
+        raise RuntimeError("The configured port serves another inventory; choose a different wiki_port.")
+    if h and h.get("version") == VERSION and h.get("root") == str(A.ROOT) and h.get("port") == port():
         return "running"
     if h:
         stop()
         start(wait)
-        return "restarted on the new code"
+        return "restarted for the current code and configured port"
     start(wait)
     return "started"
 

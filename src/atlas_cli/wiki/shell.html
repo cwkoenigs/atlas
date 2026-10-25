@@ -846,16 +846,23 @@ footer.site kbd { font-family: var(--font-monospace); padding: 0 4px; border: 1p
     }));
     box.hidden = items.length === 0;
   };
+  const dismiss = () => {
+    ++seq;
+    clearTimeout(timer);
+    items = []; sel = -1; draw();
+  };
   input.addEventListener("input", () => {
     clearTimeout(timer);
     const q = input.value.trim();
-    if (!q) { items = []; draw(); return; }
+    if (!q) { dismiss(); return; }
     const mine = ++seq;
     timer = setTimeout(async () => {
       try {
         const r = await fetch("/api/suggest?q=" + encodeURIComponent(q));
         if (mine !== seq) return;
-        items = await r.json(); sel = -1; draw();
+        const results = await r.json();
+        if (mine !== seq) return;
+        items = results; sel = -1; draw();
       } catch (_) {}
     }, 70);
   });
@@ -863,10 +870,10 @@ footer.site kbd { font-family: var(--font-monospace); padding: 0 4px; border: 1p
     if (ev.key === "ArrowDown") { sel = Math.min(sel + 1, items.length - 1); draw(); ev.preventDefault(); }
     else if (ev.key === "ArrowUp") { sel = Math.max(sel - 1, -1); draw(); ev.preventDefault(); }
     else if (ev.key === "Enter" && sel >= 0) { location.href = items[sel].url; ev.preventDefault(); }
-    else if (ev.key === "Escape") { items = []; draw(); input.blur(); }
+    else if (ev.key === "Escape") { dismiss(); input.blur(); }
   });
   document.addEventListener("click", (ev) => {
-    if (!box.contains(ev.target) && ev.target !== input) { items = []; draw(); }
+    if (!box.contains(ev.target) && ev.target !== input) { dismiss(); }
   });
 
   // Keys: / searches, e edits the page you are reading.
