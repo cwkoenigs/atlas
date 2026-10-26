@@ -355,8 +355,8 @@ def revision_text(rev: dict) -> str:
     if "text" in rev:
         return rev["text"]
     r = subprocess.run(["git", "-C", str(A.ROOT), "show", f"{rev['sha']}:{rev['path']}"],
-                       capture_output=True, text=True, timeout=10)
-    return r.stdout if r.returncode == 0 else ""
+                       capture_output=True, timeout=10)
+    return r.stdout.decode("utf-8") if r.returncode == 0 else ""
 
 
 def parse_text(text: str, like) -> dict:

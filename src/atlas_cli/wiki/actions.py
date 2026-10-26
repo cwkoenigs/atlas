@@ -119,9 +119,7 @@ def save_edit(snap, c, form):
         prev = V.preview_block(snap, new) if form.get("do") == "preview" and not secret else ""
         return "page", V.edit(snap, c, v, " ".join(problems), prev, section, base)
     summary = one_line(form.get("summary")) or ("edited a section" if section is not None else "edited")
-    A.save(new, summary, by="wiki")
-    if section is None and (form.get("personal") == "yes") != c["_personal"]:
-        A.set_personal(A.parse(new["_path"]), form.get("personal") == "yes", by="wiki")
+    A.save(new, summary, by="wiki", personal=(form.get("personal") == "yes") if section is None else None)
     A.rebuild()
     return "redirect", page_url(c), ok("Saved.")
 
@@ -183,7 +181,7 @@ def do_action(snap, c, form):
         if blocked:
             return "redirect", url, fail("macOS did not let the wiki read what the check needs. In a terminal, "
                                          f"<code>atlas check {e(c['_slug'])}</code> runs it with your permissions.")
-        res = st.get(c["id"], {})
+        res = A.check_result(c, st) or {}
         if res.get("ok"):
             return "redirect", url, ok("Check passed: this page is still true.")
         return "redirect", url, fail(f"Check failed: <code>{e(res.get('out') or 'no output')}</code>")
@@ -234,7 +232,7 @@ def check_all(snap):
     cards = snap.active
     st, blocked = _checks(cards)
     A.rebuild()
-    fails = sum(1 for c in cards if c.get("check") and not st.get(c["id"], {}).get("ok", True))
+    fails = sum(1 for c in cards if c.get("check") and not (A.check_result(c, st) or {}).get("ok", False))
     note = f" macOS blocked {len(blocked)}; run <code>atlas check</code> in a terminal for those." if blocked else ""
     return "redirect", "/special/attention", (fail if fails else ok)(
         f"Checked {sum(1 for c in cards if c.get('check'))} pages: " + (f"{fails} failing." if fails else "all passing.") + note)

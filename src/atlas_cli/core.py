@@ -1,5 +1,6 @@
 """atlas core: cards, checks, search, the generated pages. No terminal output here."""
 import ctypes
+import hashlib
 import datetime as dt, html, json, os, pathlib, re, secrets, shutil, subprocess, sys, signal
 
 from . import history as H
@@ -71,7 +72,7 @@ def parse_text(text, path):
     if not m:
         raise ValueError(f"{path}: no frontmatter")
     meta = {}
-    for line in m.group(1).splitlines():
+    for line in re.split(r"\r?\n", m.group(1)):
         line = _parts(line)
         if not line.strip() or line.lstrip().startswith("#"):
             continue
@@ -96,12 +97,17 @@ def parse_text(text, path):
 
 
 def dump(card):
+    def quoted(v):
+        text = json.dumps(v, ensure_ascii=False)
+        for ch in "\u0085\u2028\u2029":
+            text = text.replace(ch, "\\u%04x" % ord(ch))
+        return text
     def val(v):
         if isinstance(v, list):
-            return json.dumps(v, ensure_ascii=False)
+            return quoted(v)
         v = str(v)
-        if v != v.strip() or any(ch in v for ch in "\n\r\t\\'\"[]{}") or ": " in v or " #" in v:
-            return json.dumps(v, ensure_ascii=False)
+        if v != v.strip() or any(ch in v for ch in "\n\r\t\\'\"[]{}") or any(ord(ch) < 32 or ch in "\u0085\u2028\u2029" for ch in v) or ": " in v or " #" in v:
+            return quoted(v)
         return v
     keys = FIELDS + [k for k in card if not k.startswith("_") and k not in FIELDS]
     head = "\n".join(f"{k}: {val(card[k])}".rstrip() for k in keys if k in card)
@@ -110,6 +116,7 @@ def dump(card):
 
 def load(folders=("inbox", "cards", "retired")):
     with locked(ROOT):
+        _recover_save()
         _recover_move()
         cards = []
         for f in folders:
@@ -188,6 +195,29 @@ def _kill_group(pid, sig):
         pass
 
 
+def _check_binding(c):
+    """Command and captured card bytes/path identify what was actually checked."""
+    digest = lambda text: hashlib.sha256(text.encode('utf-8')).hexdigest()
+    return dict(command=digest(c.get('check', '')),
+                snapshot=digest(str(c['_path'].relative_to(ROOT)) + '\0' + c['_raw']))
+
+
+def check_result(c, st):
+    result = st.get(c.get('id'))
+    if not result or any(result.get(k) != v for k, v in _check_binding(c).items()):
+        return None
+    return result
+
+
+def _current_check(c, identity=None):
+    # Re-read under the cross-process inventory lock; never run caller-held stale commands.
+    current = next((x for x in load() if x.get('id') == c.get('id')), None)
+    if (current is None or _check_binding(current) != _check_binding(c) or
+            (identity is not None and _identity(current['_path']) != identity)):
+        return None
+    return current
+
+
 def run_checks(cards, on_each=None, accept_result=None):
     """Run each card's check; on_each(card, ok, out) after each one. Results go to .state/checks.json."""
     updates = {}
@@ -195,6 +225,14 @@ def run_checks(cards, on_each=None, accept_result=None):
         cmd = c.get("check", "")
         if not cmd:
             continue
+        with locked(ROOT):
+            current = _current_check(c)
+            if current is None: continue
+            identity = _identity(current['_path'])
+            runs = ROOT / '.state/check-generation.json'
+            generation = (json.loads(read_text(runs)) if runs.exists() else 0) + 1
+            atomic_write(runs, json.dumps(generation))
+            binding = _check_binding(current)
         try:
             r = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                  text=True, cwd=HOME, start_new_session=True)
@@ -221,21 +259,31 @@ def run_checks(cards, on_each=None, accept_result=None):
         result = {"ok": ok, "at": dt.datetime.now().isoformat(timespec="minutes"),
                        "out": out.splitlines()[-1][:200] if out else ""}
         if accept_result is None or accept_result(c, result):
-            updates[c["id"]] = result
+            updates[c["id"]] = (c, identity, {**result, **binding, "generation": generation})
         if on_each:
             on_each(c, ok, result["out"])
     with locked(ROOT):
         st = state()
-        st.update(updates)
+        for cid, (c, identity, result) in updates.items():
+            if (_current_check(c, identity) is not None and
+                    result['generation'] > st.get(cid, {}).get('generation', 0)):
+                st[cid] = result
         atomic_write(STATE, json.dumps(st, indent=1) + "\n")
-        return st
+        # Explicit callers must not interpret an unmatched historical success as
+        # the outcome of this run when the card changed during execution.
+        current = {}
+        for c in load():
+            result = check_result(c, st)
+            if result is not None:
+                current[c["id"]] = result
+        return current
 
 
 def status(c, st):
     """(word, state) for display. state is ok | fail | none | draft | retired."""
     if c["_folder"] == "retired":
         return "Retired", "retired"
-    s = st.get(c.get("id"))
+    s = check_result(c, st)
     if c["_folder"] == "inbox":
         return "Draft", "draft"
     if not c.get("check"):
@@ -258,7 +306,7 @@ def attention(cards, st):
     for c in cards:
         word, s = status(c, st)
         why, rank = [], 9
-        res = st.get(c.get("id"))
+        res = check_result(c, st)
         if res and not res["ok"]:
             why.append("not ok" + (f": {res['out']}" if res["out"] else ", its check fails")); rank = 0
         if s == "draft":
@@ -397,6 +445,7 @@ def transaction(fn):
     @wraps(fn)
     def run(*args, **kwargs):
         with locked(ROOT):
+            _recover_save()
             _recover_move()
             return fn(*args, **kwargs)
     return run
@@ -420,19 +469,32 @@ def check_title(title, own_path=None):
             raise Conflict(f"A page called {title!r} already exists (or is an alias of {other['title']!r}).")
 
 
+def check_names(candidate, own_path):
+    """The resolver shares one case-insensitive title/alias/slug/id namespace."""
+    names = [candidate.get('title', ''), *(candidate.get('aliases') or [])]
+    if not all(isinstance(name, str) for name in names):
+        raise ValueError("Page titles and aliases must be text.")
+    check_title(candidate.get('title', ''), own_path)
+    keys = {name.lower() for name in names if name}
+    for other in load():
+        if other['_path'] == own_path: continue
+        owned = [other['title'], other['_slug'], other.get('id', ''), *(other.get('aliases') or [])]
+        collisions = keys.intersection(name.lower() for name in owned)
+        if collisions:
+            raise Conflict(f"Page name or alias {sorted(collisions)[0]!r} is already owned by {other['title']!r}.")
+
+
 @transaction
-def save(c, summary, by="cli", text=None):
-    """Validate, preserve the preimage, and atomically replace under the inventory lock."""
+def save(c, summary, by="cli", text=None, personal=None):
+    """Claim the actual displaced inode before exclusively publishing a replacement."""
     validate_snapshot(c)
     text = dump(c) if text is None else text
-    parsed = parse_text(text, c["_path"])
+    dest = move_destination(c, c["_folder"], personal)
+    parsed = parse_text(text, dest)
     if parsed.get("id") != c.get("id"):
         raise ValueError("A save cannot change the card ID.")
-    if parsed.get("title") != parse(c["_path"]).get("title"):
-        check_title(parsed["title"], c["_path"])
-    H.ensure_base(ROOT, c.get("id"), c["_path"])
-    atomic_write(c["_path"], text)
-    H.record(ROOT, c.get("id"), text, summary, by)
+    check_names(parsed, c["_path"])
+    _begin_save(c, dest, text, summary, by)
     c.clear()
     c.update(parsed)
 
@@ -453,7 +515,9 @@ def new_card(title, kind, host, personal=False, confidence="believed", body=None
                 confirmed="", links=fields.pop("links", []) or [], notes=[])
     card.update({k: v for k, v in fields.items() if v})
     card["_body"] = tpl["_body"] if body is None else body
-    atomic_write(path, dump(card))
+    text = dump(card)
+    parse_text(text, path)  # Refuse malformed output before any card publication.
+    atomic_write(path, text)
     H.record(ROOT, card["id"], read_text(path), summary, by)
     return parse(path)
 
@@ -464,10 +528,12 @@ def promote(c, force=False, by="cli"):
         return None, f"it is already in {c['_folder']}/"
     missing = [k for k in REQUIRED if not c.get(k)]
     st = run_checks([c]) if c.get("check") else state()
+    with locked(ROOT):
+        validate_snapshot(c)
     if not force:
         if missing:
             return None, "fill these first: " + ", ".join(missing)
-        if not st.get(c["id"], {}).get("ok"):
+        if not (check_result(c, st) or {}).get("ok"):
             return None, "its check does not pass yet"
     c["confirmed"] = TODAY.isoformat()
     if c.get("confidence") in ("", "guess") and not missing:
@@ -653,6 +719,117 @@ def _recover_move():
     _clear_move(stage)
 
 
+def _clear_save():
+    # Retain all captured inodes: an editor may still have one open.
+    path = ROOT / '.state/save.json'
+    path.unlink()
+    fsync_dir(path.parent)
+
+
+def _read_save():
+    try:
+        j = json.loads(read_text(ROOT / '.state/save.json'))
+        if j['version'] != 1 or j['phase'] != 'save' or not re.fullmatch(r'a-[0-9a-f]{6}', j['id']):
+            raise ValueError("invalid save intent or pending rollback")
+        source, dest, stage = _move_path(j['source']), _move_path(j['dest']), _move_path(j['stage'], True)
+        claim = _claim_path(j['source_claim'], source, 'source')
+        rollback = _claim_path(j['dest_claim'], dest, 'destination')
+        if stage.parent != dest.parent:
+            raise ValueError("invalid save staging directory")
+        for key in ('before', 'after', 'summary', 'by', 'at'):
+            if not isinstance(j[key], str): raise ValueError("invalid save fields")
+        for key in ('source_identity', 'stage_identity'):
+            if not isinstance(j[key], list) or len(j[key]) != 2 or not all(type(n) is int for n in j[key]):
+                raise ValueError("invalid save identity")
+        if any(parse_text(j[key], source).get('id') != j['id'] for key in ('before', 'after')):
+            raise ValueError("save card ID changed")
+        if not _move_matches(stage, j['stage_identity'], j['after']) or os.path.lexists(rollback):
+            raise ValueError("save stage changed or unexpected rollback claim")
+        if os.path.lexists(claim):
+            if not _move_matches(claim, j['source_identity'], j['before']):
+                raise ValueError("save source claim changed")
+            if source != dest and os.path.lexists(source):
+                raise ValueError("save original name recreated")
+            if os.path.lexists(dest) and not _move_matches(dest, j['stage_identity'], j['after']):
+                raise ValueError("save destination changed")
+        elif not _move_matches(source, j['source_identity'], j['before']) or (dest != source and os.path.lexists(dest)):
+            raise ValueError("save source changed or destination occupied")
+        return j, source, dest, stage, claim, rollback
+    except (OSError, ValueError, KeyError, TypeError) as ex:
+        raise Conflict(f"Interrupted card save needs reconciliation; all artifacts retained: {ex}") from ex
+
+
+def _rollback_save(j, source, dest, stage, claim, rollback):
+    j['phase'] = 'rollback'
+    atomic_write(ROOT / '.state/save.json', json.dumps(j, ensure_ascii=False))
+    # With an in-place save the original name may now hold the published stage or
+    # an unknown editor replacement. Capture either atomically, never unlink it.
+    if os.path.lexists(claim):
+        if os.path.lexists(dest):
+            _claim_file(dest, rollback)
+            if not _move_matches(rollback, j['stage_identity'], j['after']):
+                _restore_claim(rollback, dest)
+        _restore_claim(claim, source)
+    if (not _move_matches(source, j['source_identity'], j['before']) or
+            (os.path.lexists(claim) and not _move_matches(claim, j['source_identity'], j['before'])) or
+            (os.path.lexists(rollback) and not _move_matches(rollback, j['stage_identity'], j['after']))):
+        raise Conflict("Save captured an external edit; originals and backups retained for reconciliation.")
+    _clear_save()
+
+
+def _recover_save():
+    """Recover under the inventory lock; history helpers never call back into load."""
+    if not (ROOT / '.state/save.json').exists(): return
+    j, source, dest, stage, claim, rollback = _read_save()
+    try:
+        if not os.path.lexists(claim): _claim_file(source, claim)
+        if not _move_matches(claim, j['source_identity'], j['before']):
+            raise Conflict("Save source changed at capture; needs reconciliation.")
+        if source != dest and os.path.lexists(source):
+            raise Conflict("Save original name recreated; needs reconciliation.")
+        if not os.path.lexists(dest):
+            os.link(stage, dest, follow_symlinks=False)
+            fsync_dir(dest.parent)
+        if (not _move_matches(dest, j['stage_identity'], j['after']) or
+                not _move_matches(claim, j['source_identity'], j['before'])):
+            raise Conflict("Save changed at publication; needs reconciliation.")
+    except Exception:
+        _rollback_save(j, source, dest, stage, claim, rollback)
+        raise
+    old = H.entries(ROOT, j['id'])
+    entry = {k: j[k] for k in ('at', 'by', 'summary')}
+    entry['text'] = j['after']
+    if not old or any(old[-1].get(k) != v for k, v in entry.items()):
+        H.record(ROOT, j['id'], j['after'], j['summary'], j['by'], at=j['at'], force=True)
+    _clear_save()
+
+
+def _begin_save(c, dest, text, summary, by):
+    source = c['_path']
+    _move_path(str(source.relative_to(ROOT)))
+    _move_path(str(dest.relative_to(ROOT)))
+    identity = _identity(source)
+    mode = source.stat().st_mode & 0o777
+    H.ensure_base(ROOT, c['id'], source)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    stage = dest.parent / ('.atlas-move-' + secrets.token_hex(16))
+    atomic_write(stage, text)
+    stage.chmod(mode)
+    with stage.open('rb') as stream: os.fsync(stream.fileno())
+    claims = []
+    for path, leaf in ((source, 'source'), (dest, 'destination')):
+        directory = path.parent / ('.atlas-claim-' + secrets.token_hex(16))
+        directory.mkdir(mode=0o700)
+        fsync_dir(path.parent)
+        claims.append(str((directory / leaf).relative_to(ROOT)))
+    j = dict(version=1, phase='save', id=c['id'], source=str(source.relative_to(ROOT)),
+             dest=str(dest.relative_to(ROOT)), stage=str(stage.relative_to(ROOT)),
+             source_identity=identity, stage_identity=_identity(stage), source_claim=claims[0],
+             dest_claim=claims[1], before=c['_raw'], after=text, summary=summary, by=by, at=H.now())
+    atomic_write(ROOT / '.state/save.json', json.dumps(j, ensure_ascii=False))
+    _recover_save()
+
+
 @transaction
 def _move(c, folder, summary, by, personal=None):
     validate_snapshot(c)
@@ -667,6 +844,7 @@ def _move(c, folder, summary, by, personal=None):
     H.ensure_base(ROOT, c.get("id"), source)
     dest.parent.mkdir(parents=True, exist_ok=True)
     text = dump(c)
+    parse_text(text, dest)
     stage = dest.parent / ('.atlas-move-' + secrets.token_hex(16))
     atomic_write(stage, text)
     stage.chmod(source.stat().st_mode & 0o777)

@@ -11,6 +11,7 @@ Origin must be this server. Pages are rendered with markdown's raw HTML off and 
 from __future__ import annotations
 
 from contextlib import contextmanager
+from functools import wraps
 import hashlib
 import json
 import os
@@ -334,11 +335,25 @@ def serve() -> None:
 
 # ── starting and stopping it from the CLI ────────────────────────────────────
 
+def lifecycle(fn):
+    """All CLI lifecycle entrypoints use the SAME reentrant thread/process lock.
+
+    Never take the inventory lock here: the serving process needs it to finish
+    admitted writers and publish its instance-specific completion marker. The
+    server itself never takes server.lock, including startup and shutdown.
+    """
+    @wraps(fn)
+    def run(*args, **kwargs):
+        with locked(A.ROOT, 'server.lock'):
+            return fn(*args, **kwargs)
+    return run
+
+
 def _probe(bound_port, timeout):
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{bound_port}/healthz", timeout=timeout) as r:
             data = json.loads(r.read())
-            return {**data, "port": bound_port} if data.get("app") == "atlas-wiki" else {"app": "other"}
+            return data if data.get("app") == "atlas-wiki" and data.get("port") == bound_port else {"app": "other"}
     except (OSError, ValueError):
         return None
 
@@ -355,24 +370,35 @@ def health(timeout: float = 0.6) -> dict | None:
         except (ValueError, KeyError, TypeError) as ex:
             raise RuntimeError(f"Invalid wiki server metadata: {ex}") from ex
         old = _probe(bound, timeout)
-        if old and old.get("root") == str(A.ROOT) and old.get("pid") == meta.get("pid"):
+        if (old and old.get("root") == str(A.ROOT) and old.get("pid") == meta.get("pid") and
+                (not meta.get("instance") or old.get("instance") == meta["instance"])):
             return old
     return _probe(port(), timeout)
 
 
+@lifecycle
 def start(wait: bool = True) -> int:
+    # Even legacy wait=False callers wait for readiness: releasing the lifecycle
+    # lock before a verified listener exists allows a second process to launch.
+    h = health()
+    if h:
+        if h.get('app') != 'atlas-wiki' or h.get('root') != str(A.ROOT):
+            raise RuntimeError("The configured port is occupied; no server was started or stopped.")
+        if h.get('version') == VERSION and h.get('port') == port():
+            return int(h['pid'])
+        stop()
     log = A.ROOT / ".state" / "wiki.log"
     log.parent.mkdir(exist_ok=True)
     env = {**os.environ, "ATLAS_DIR": str(A.ROOT)}
     with log.open("ab") as out:
         p = subprocess.Popen([sys.executable, "-m", "atlas_cli.wiki", "--serve"], stdin=subprocess.DEVNULL,
                              stdout=out, stderr=out, start_new_session=True, cwd=str(pathlib.Path.home()), env=env)
-    if not wait:
-        return p.pid
     for _ in range(80):
         time.sleep(0.1)
         h = health()
-        if h and h.get("pid") == p.pid:
+        if (h and h.get("app") == "atlas-wiki" and h.get("pid") == p.pid and
+                h.get("version") == VERSION and h.get("root") == str(A.ROOT) and
+                h.get("port") == port() and h.get("instance")):
             return p.pid
         if p.poll() is not None:
             tail = log.read_text(errors="replace").strip().splitlines()[-1:] or ["no output"]
@@ -380,6 +406,7 @@ def start(wait: bool = True) -> int:
     raise RuntimeError("the wiki did not answer within 8 seconds; see .state/wiki.log in the atlas folder")
 
 
+@lifecycle
 def stop() -> bool:
     h = health()
     if not h or h.get("app") != "atlas-wiki":
@@ -408,6 +435,7 @@ def stop() -> bool:
     raise RuntimeError("The wiki is still draining active writes; it has not stopped yet.")
 
 
+@lifecycle
 def ensure(wait: bool = True) -> str:
     """Make sure a wiki running this code, on these cards, is up. Returns what happened."""
     h = health()
