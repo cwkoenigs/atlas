@@ -158,7 +158,7 @@ def body_html(snap: Snap, c, editable=True):
 def infobox(snap: Snap, c, actions=True) -> str:
     url = page_url(c)
     word, s = A.status(c, snap.st)
-    res = snap.st.get(c.get("id"))
+    res = A.check_result(c, snap.st)
     status = f'<span class="chip" data-state="{e(s)}">{e(word)}</span>'
     if res and c["_folder"] != "retired":
         status += f' <span class="sub">checked {e(A.ago(res["at"]))}</span>'

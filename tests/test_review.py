@@ -206,6 +206,7 @@ for i in range(30): H.record(A.ROOT,'a-000001',sys.argv[1]+str(i),'concurrent','
         p = self.process(code)
         self._wait_file('ready')
         fresh = {**c, 'check': 'true'}
+        A.save(fresh, 'persist replacement check')
         A.run_checks([fresh])
         (self.root / 'go').touch()
         self.finish(p)

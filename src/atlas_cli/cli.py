@@ -115,7 +115,7 @@ def print_card(c, cards, st) -> None:
     for label, k in (("where", "where"), ("what", "what"), ("why", "why"), ("edit it at", "source"), ("get to it", "entry")):
         if c.get(k):
             labelled_wrap(label, c[k])
-    res = st.get(c.get("id"))
+    res = A.check_result(c, st)
     if res:
         if res["ok"]:
             labelled_wrap("last check", f"passed{G.sep}{A.ago(res['at'])}", "ok")
@@ -156,19 +156,33 @@ def resolve(query: str, cards=None):
 
 # ── commands ─────────────────────────────────────────────────────────────────
 
+def current_check_results(cards, st):
+    """Resolve outcomes against fresh cards; callbacks only report execution progress."""
+    current = {c.get("id"): c for c in A.load()}
+    for c in cards:
+        fresh = current.get(c.get("id"))
+        result = A.check_result(fresh, st) if fresh is not None and fresh.get("check") else None
+        yield c, result
+
+
 def checks(cards, quiet: bool = False):
-    """Run checks with the one live line; print an outcome per card unless quiet."""
+    """Run checks with the one live line; print only validated current outcomes."""
     todo = [c for c in cards if c.get("check")]
     started = time.monotonic()
-    results = []
+    completed = 0
     with out.status(S.status_label("checking", 0), spinner=S.SPINNER, spinner_style="accent") as live:
         def each(c, ok, detail):
-            results.append((c, ok, detail))
-            live.update(S.status_label(f"checked {len(results)} of {len(todo)}", int(time.monotonic() - started)))
+            nonlocal completed
+            completed += 1
+            live.update(S.status_label(f"checked {completed} of {len(todo)}", int(time.monotonic() - started)))
         st = A.run_checks(todo, on_each=each)
     if not quiet:
-        for c, ok, detail in results:
-            out.print(S.outcome("ok" if ok else "err", c["title"], "" if ok else detail))
+        for c, result in current_check_results(todo, st):
+            if result is None:
+                out.print(S.outcome("warn", c["title"], "not checked for the current version; run atlas check again"))
+            else:
+                out.print(S.outcome("ok" if result["ok"] else "err", c["title"],
+                                    "" if result["ok"] else result["out"]))
     return st
 
 
@@ -221,9 +235,18 @@ def cmd_check(args) -> None:
         cards = [resolve(" ".join(args.query), cards)]
     st = checks(cards)
     A.rebuild(A.load(), st)
-    lst = A.ordered(A.load())
-    fails = sum(1 for c in cards if not st.get(c["id"], {}).get("ok", True))
-    out.print(S.footer(f"{len(cards)} checked", f"{fails} failing" if fails else "all ok", "pages rebuilt"))
+    results = [result for _, result in current_check_results(cards, st)]
+    checked = sum(result is not None for result in results)
+    fails = sum(result is not None and not result["ok"] for result in results)
+    missing = len(results) - checked
+    facts = [f"{checked} checked"]
+    if fails:
+        facts.append(f"{fails} failing")
+    if missing:
+        facts.append(f"{missing} not checked")
+    if not fails and not missing:
+        facts.append("all ok" if checked else "nothing to check")
+    out.print(S.footer(*facts, "pages rebuilt"))
 
 
 def cmd_new(args) -> None:

@@ -11,16 +11,18 @@ _registry_lock = threading.Lock()
 
 
 @contextmanager
-def locked(root):
+def locked(root, name="write.lock"):
     root = pathlib.Path(root).resolve()
+    if pathlib.Path(name).name != name:
+        raise ValueError("Lock name must be a filename")
     with _registry_lock:
-        mutex, local = _registry.setdefault(root, (threading.RLock(), threading.local()))
+        mutex, local = _registry.setdefault((root, name), (threading.RLock(), threading.local()))
     with mutex:
         depth = getattr(local, 'depth', 0)
         if not depth:
             directory = root / '.state'
             directory.mkdir(parents=True, exist_ok=True)
-            local.file = (directory / 'write.lock').open('a')
+            local.file = (directory / name).open('a')
             try:
                 fcntl.flock(local.file.fileno(), fcntl.LOCK_EX)
             except BaseException:
