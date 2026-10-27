@@ -9,6 +9,9 @@ from functools import wraps
 
 ROOT = pathlib.Path(os.environ.get("ATLAS_DIR", pathlib.Path.home() / "Developer" / "atlas")).expanduser()
 CFG = json.loads((ROOT / "atlas.json").read_text())
+_local_config = ROOT / "atlas.local.json"
+if _local_config.is_file():
+    CFG.update(json.loads(_local_config.read_text()))
 STATE = ROOT / ".state" / "checks.json"
 FOLDERS = {"inbox": "Draft", "cards": "Active", "retired": "Retired"}
 FIELDS = ["id", "title", "kind", "host", "where", "what", "why", "source", "entry", "check",

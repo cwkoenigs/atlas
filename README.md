@@ -1,131 +1,98 @@
-# atlas
+# Atlas
 
-What runs where, and why. One markdown card per thing (a site, a job, a repo, a folder, a device), each with a check command that proves it is still true, and a wiki built from all of them to read at the start of the day.
+A local wiki for what runs where, and why. **A new installation starts empty.**
 
-Atlas never moves anything. It records where a thing already is, so an hour spent untangling it is not spent twice.
+This repository contains the application, not an inventory. It does not import home projects, assume a life-admin dashboard, scan your machine, or copy records from another computer. Add your first page in the wiki, use `atlas new`, or explicitly run a folder scan.
 
-## Using it
-
-```sh
-atlas              # the map, then a picker: type to filter, arrows to move, Enter opens, Esc quits
-atlas 2            # read card 2
-atlas pi           # read the card with "pi" in its name (a picker if several match)
-atlas open 2       # open card 2's file, with the full untangle story
-atlas new          # a form to draft a card
-atlas wiki         # the whole atlas as a wiki in your browser
-atlas help         # everything else
-```
-
-You never type an id. Every command that takes a card (`open`, `check`, `confirm`, `promote`, `retire`, `personal`) takes a number from the map or a word from the card's name. `atlas` re-runs the checks when the last run is over 6 hours old; `atlas check` forces it. `atlas map --no-check` and `atlas today --no-check` use cached results without running commands; `--no-check` wins if `--check` is also supplied. `--plain` prints without colour or widgets (also automatic when piped).
-
-The look comes from [ds-cli-design](https://github.com/cwkoenigs/ds-cli-design), the terminal design system (roles, glyphs, the 80-column grid, frames for anything that needs you, the dog-and-cat banner). Atlas imports it; it holds no colours or glyphs of its own.
-
-## The wiki: `atlas wiki`
-
-`atlas wiki` opens the atlas as a wiki at http://localhost:8788 (it starts the wiki if it is not running; bare `atlas` keeps it running too, and the life-admin hub's Atlas tile goes there). Light by default; the Dark button switches and remembers. `atlas wiki 5` opens one card's page; `atlas wiki --stop` stops it after active writes finish. Idle HTTP connections do not delay shutdown. If `wiki_port` changes, `atlas wiki` discovers the previous listener through `.state/wiki-server.json`, drains it, and starts on the configured port. Host and Origin validation always use the socket's bound port.
-
-- **A page per card**, with an at-a-glance box (status, place, kind, where, what, why, where to edit it, how to reach it, the check) and buttons that do what the commands do: run the check, still true, promote, make personal or share, retire, bring back.
-- **Links.** `[[Page name]]` (or `[[Page name|shown text]]`) in any card links to that page; a missing page shows as a dashed link that creates it. A path in backticks, like `` `~/Developer/atlas` ``, links to the page about that folder. Each page lists what it links to, what links to it, what it is part of, what is inside it, and what shares its repo.
-- **Editing.** Edit a whole page or one section (the `edit` link by each heading), preview before saving, and leave a summary. If the file changed while you were editing (the CLI, an agent, another window), it tells you instead of overwriting. It refuses anything that looks like a password, token or key. Renaming a page keeps the old name working and refuses a name owned by another page, including its aliases. Related-page forms retain stable IDs; you can also enter names, quoting any name that contains a comma.
-- **History.** Every version of every page, from the wiki, the CLI, a scan, an editor or git, newest first; compare any two, see what changed, restore an old version. Kept in `.state/history/`, never in git, so personal pages' history stays on this Mac too.
-- **Finding things.** Search as you type in the top bar (`/` jumps there); full-text search with highlighted matches; Recent changes; Needs a look (with "Check everything now"); All pages A to Z; a page for each place and each kind; Wanted pages (links nobody has written); Retired pages; Random page.
-
-It is served by atlas itself (Python's standard library) on 127.0.0.1 only. It answers only to `localhost` and accepts a form only from its own pages, so another website cannot drive it. Its look is the Data Science design system's docs-portal style: `src/atlas_cli/wiki/shell.html` carries the generated theme regions, so `python3 ~/Developer/dashboard-style/scripts/build_theme.py --into src/atlas_cli/wiki/shell.html` refreshes it after a design change and `check_theme.py` checks it.
-
-## Install
+## Install on macOS
 
 ```sh
-# with both repos checked out (changes to either show up at once):
-uv tool install --editable ~/Developer/atlas --with-editable ~/Developer/ds-cli-design --no-sources
-# with only atlas checked out (ds-cli-design comes from GitHub):
+brew install git gh uv
+gh auth login
+gh auth setup-git
+mkdir -p ~/Developer
+git clone --depth 1 https://github.com/cwkoenigs/atlas.git ~/Developer/atlas
 uv tool install --editable ~/Developer/atlas
-cp ~/Developer/atlas/bin/atlas-shim /opt/homebrew/bin/atlas   # if ~/.local/bin is not on your PATH
+uv tool update-shell
+export PATH="$HOME/.local/bin:$PATH"
+atlas wiki
 ```
 
-Editable means a `git pull` updates the command. The cards stay in `~/Developer/atlas` (set `ATLAS_DIR` to use another folder).
+Sign into an account with access to the private repositories. `uv` installs the terminal library, `ds-cli-design`, from GitHub automatically; it does not push anything to GitHub. No Hermes, dashboard-style checkout, Documents folder, or home-machine configuration is required.
 
-## Finding what's there: `atlas scan`
+The wiki runs at **http://localhost:8788/**, bound to the local machine only. macOS and Linux have the locking primitives the app uses; native Windows is not supported.
+
+## Everyday use
 
 ```sh
-atlas scan --dry-run      # what it would draft, nothing written
-atlas scan                # ~/Developer by default; or atlas scan ~/some/folder
+atlas wiki                    # open the wiki; an initial install has zero pages
+atlas new                     # draft your first page
+atlas map --no-check          # terminal map without running check commands
+atlas                         # terminal map and picker; may run existing card checks
+atlas 2                       # read the page numbered 2 on the map
+atlas open 2                  # open its markdown file
+atlas check                   # explicitly run the saved checks
+atlas help
 ```
 
-For each folder directly inside, it reads the git remote and state, what the README or package says it is, how it deploys (`.vercel`, `vercel.json`, Fly, GitHub Actions), what on this Mac uses it (launchd jobs, Hermes cron, agent skills, uv tools) and other clones of the same repo. A folder no card mentions gets a draft in the inbox with `where`, `what`, a check, those facts, and gotchas (no remote, uncommitted or unpushed work, not in git). `why` stays empty: only you know it. Drafts are personal (this Mac only) until you share them with `atlas personal <n> --undo`; `--shared` drafts them shared. The scan only reads; it never changes the folders.
+Use a map number or a word from a page's name, not an internal ID. `atlas` refreshes checks when the last run is over six hours old. Check commands are user-authored trusted shell code, not sandboxed expressions. Stale or legacy results are not treated as current passes.
 
-## After untangling something
+The wiki supports whole-page/section editing and preview, links and backlinks, search, history/diff/restore, and draft/active/retired lifecycle actions. It defaults to light mode and remembers an explicit theme change. Edits detect conflicts rather than overwriting a newer version.
 
-Ask Hermes to "put this in the atlas"; the `atlas` skill turns the session into a card. By hand:
+## Your inventory stays local
 
-```sh
-atlas new "Ringneck billing site" --kind site --host vercel     # drafts inbox/ringneck-billing-site.md
-# fill in the card, then:
-atlas promote a-7e21c4      # inbox -> cards, once what/why/where are filled and the check passes
-```
-
-## The lifecycle
-
-| Stage | Folder | Means | Move it with |
-|---|---|---|---|
-| Draft | `inbox/` | Captured, not yet confirmed | `atlas promote ID` |
-| Active | `cards/` | Confirmed true; re-checked daily | `atlas confirm ID` after re-reading it |
-| Retired | `retired/` | The thing is gone; the card keeps the history | `atlas retire ID --reason "..."` |
-
-## Personal cards
-
-`atlas personal ID` moves a card into its folder's `personal/` subfolder, which git ignores. Home and family things (the kids' school tracker, the home Pi, the old Mac, the life-admin dashboards) live there, so they stay on Clark's own Mac and never reach GitHub or a work computer. `ATLAS.md` is built on each machine and is not committed either. `atlas new --personal` starts a card as personal; `atlas personal ID --undo` shares it.
-
-## Commands
-
-| Command | Does |
-|---|---|
-| `atlas` | The map and the picker; checks again if the last run is over 6 h old |
-| `atlas new "Title" --kind K --host H` | Draft a card in `inbox/` (also `--where --what --why --source --entry --check --link --personal`) |
-| `atlas check [ID ...]` | Run checks |
-| `atlas promote ID` | Inbox to cards (refuses if a required field is empty or the check fails; `--force` for something known to be down) |
-| `atlas confirm ID` | Stamp today as the last time it was confirmed true |
-| `atlas retire ID --reason TEXT` | Cards to retired |
-| `atlas personal ID [--undo]` | Keep a card on this Mac only, or share it again |
-| `atlas show ID` | Read cards in the terminal |
-| `atlas open ID [--edit]` | Open a card file in its app (or `$EDITOR`) |
-| `atlas wiki [ID]` | Open the wiki (or one card's page); `--stop` stops it, `--no-open` only starts it. `atlas page` does the same |
-| `atlas lint` | Missing fields, unknown hosts, links to nothing |
-
-ID can be the number from the map, any word from the card's name, its file name, or its id.
-
-## A card
-
-```yaml
-id: a-7e21c4
-title: Ringneck billing site
-kind: site          # site | app | service | job | repo | folder | domain | device
-host: vercel        # a key in atlas.json: groups the morning page by place
-where: Vercel project ringneck-billing (team code-harvest)
-what: The billing site. Builds from site/ringneck-billing in the ringneck-pork repo.
-why: Ringneck Pork's billing pages; production deploy on every push to main.
-source: ~/Developer/ringneck-pork/site/ringneck-billing      # where you edit it
-entry: https://ringneck-billing.vercel.app                  # how you reach it
-check: curl -fsS -o /dev/null -m 10 https://ringneck-billing.vercel.app
-links: [a-19d6ef, a-4b90d2]       # related cards, drawn in the Connections graph
-confidence: confirmed             # confirmed | believed | guess
-confirmed: 2026-10-22
-```
-
-Below the frontmatter: **Short version** (what to remember), **Untangled** (what looked true, what is, how we know), **To change it**, **Gotchas**. The template is `templates/card.md`. Existing plain frontmatter and comments remain readable. Saves use JSON-escaped quoted strings when needed and JSON string lists, preserving literal quotes, commas, comment markers, and embedded newlines.
-
-## Files
-
-| Path | What it is | In git |
+| Path | Purpose | Included in this app repository? |
 |---|---|---|
-| `cards/`, `inbox/`, `retired/` | The cards. The only thing you edit | yes |
-| `*/personal/` | Personal cards | no |
-| `ATLAS.md` | The morning page in markdown, rebuilt by `atlas` and `atlas check` | no |
-| `atlas.json` | Places (hosts) and their names, the stale threshold, the wiki's port (`wiki_port`, default 8788), and the life-admin page that forwards to the wiki | yes |
-| `src/atlas_cli/` | The CLI: `core.py` (cards, checks, pages), `cli.py` (the terminal), `picker.py` (cards into the design system's picker), `history.py` (every version of every card), `scan.py`, `wiki/` (the wiki) | yes |
-| `pyproject.toml` | Package `atlas-map`, command `atlas`; needs ds-cli-design and markdown-it-py | yes |
-| `.state/` | Last check results, page history, the wiki's log | no |
+| `inbox/` | Draft pages | No |
+| `cards/` | Active pages | No |
+| `retired/` | Retired pages | No |
+| `.state/` | Local history, results, server metadata and recovery journals | No |
+| `ATLAS.md` | Generated summary | No |
+| `atlas.local.json` | This machine's places and optional integrations | No |
+| `atlas.json` | Neutral application defaults | Yes |
+| `templates/card.md` | Blank page template | Yes |
 
-On a new machine: clone to `~/Developer/atlas`, `uv tool install --editable ~/Developer/atlas`, run `atlas`. If `atlas.json`'s `template` path does not exist there, it skips the life-admin page; `atlas wiki` works anywhere.
+All inventory folders are ignored—not just `personal/`. A personal flag still classifies a page inside the inventory; removing that flag does **not** upload the page. Git pulls/pushes in this application repository update code, not your records. Back up your inventory and `.state/` separately. A separately managed `ATLAS_DIR` can use its own backup/versioning policy.
+
+Earlier versions of this private repository bundled inventory records. They were removed from the current tree, not erased from historical commits. The shallow-clone command above does not fetch that old history. Updating an older checkout removes unchanged formerly tracked records; preserve your own inventory before updating if you want to keep those records. Git refuses an update that would overwrite uncommitted edits—do not force it or run `git clean` on your inventory.
+
+## Local configuration (optional)
+
+You do not need to edit configuration to start. The default place is `this-mac` (This computer), and external HTML export is disabled.
+
+To add your own places or change settings, create ignored `atlas.local.json` beside `atlas.json`:
+
+```json
+{
+  "hosts": {
+    "this-mac": "This computer",
+    "work-server": "Work server"
+  },
+  "wiki_port": 8788
+}
+```
+
+Local keys replace the matching defaults; `hosts` replaces the entire host map. Restart after changing config: `atlas wiki --stop`, then `atlas wiki`.
+
+`html_out` and `template` are optional legacy dashboard-export settings. Both default to `null`. They are unrelated to running the standalone wiki; leave them disabled unless you deliberately configure an integration on this machine. The wiki's HTML/CSS is already included in the package.
+
+## Scan only when you ask
+
+```sh
+atlas scan ~/Developer --dry-run   # inspect the proposed drafts; write nothing
+atlas scan ~/Developer             # explicitly create local draft pages
+```
+
+Scanning reads folder facts and creates drafts only for unmapped directories. It does not move or modify the projects themselves. It leaves the reason (`why`) for you to fill in. There is no automatic scan or inventory import during installation or startup.
+
+## Update
+
+```sh
+git -C ~/Developer/atlas pull --ff-only
+atlas wiki
+```
+
+The installation is editable, so pulling updates the command. The wiki restarts when its code changes. To stop it: `atlas wiki --stop`.
 
 ## Mutation safety and regression checks
 
@@ -139,11 +106,4 @@ Claimed source and rollback inodes **remain on disk**, with original permissions
 
 The lock coordinates Atlas processes on one machine. Editors that do not take that lock can still race during an in-place write; reload after an external edit. Graceful shutdown drains accepted writes and closes the listener before persisting an instance-bound completion marker in `.state/wiki-server.json`, so an unreaped exited process does not block port migration. A stop that is still draining after eight seconds reports an error. Forced termination cannot drain writes. Wiki responses use `Referrer-Policy: same-origin` so browser forms retain their origin; strict Origin and CSRF validation remain in force. Historical CRLF revisions render through the core parser and restore with their exact original bytes.
 
-Run the isolated stdlib suite with the installed Atlas interpreter and local sources:
-
-```sh
-PYTHONPATH="$PWD/src" /Users/clarkkoenigs/.local/share/uv/tools/atlas-map/bin/python -m unittest discover -v
-PYTHONPATH="$PWD/src" /Users/clarkkoenigs/.local/share/uv/tools/atlas-map/bin/python -m compileall -q src tests
-```
-
-The suite requires Node.js for the shipped JavaScript suggestion tests. Test inventories and check working directories are disposable directories under `TMPDIR`; no existing card check commands run. HTTP shutdown tests use socket pairs so they also run where TCP binding is denied. See [the 26-finding resolution map](docs/review-resolution.md) and [observed red/green results](docs/regression-log.md).
+Run the isolated stdlib suite with the Python interpreter in the installed Atlas tool environment, `PYTHONPATH=src`, and an explicit disposable `TMPDIR`. The suite also needs Node.js for the shipped JavaScript search tests. Existing card checks are never used by the suite. See [the original review map](docs/review-resolution.md), [second-review map](docs/review2-resolution.md), and [observed red/green results](docs/regression-log.md).
