@@ -31,6 +31,10 @@ The parent made a genuine shallow clone of the candidate, installed it in a sepa
 - Creating the first local page, rendering it, and running its harmless fixture check all succeeded.
 - The resulting page/history/check artifacts stayed ignored; the cloned application working tree stayed clean.
 - The fixture server was stopped afterward.
+- A second server run loaded ignored local host/port settings without an environment port override; the settings survived real HTTP requests.
+- A separate preservation rehearsal copied all 38 home cards into the new empty application tree; every byte hash and parsed field matched, and home settings survived a wiki snapshot from local config.
+
+The initial independent review found the snapshot reload issue listed above. A focused final review of the shared-loader fix passed with no logic errors or security concerns and independently reran all five empty-install regressions.
 
 The running home inventory requires a separate preservation gate: backup before updating; retain all card bytes and local history; preserve home integration in ignored local config; verify hashes and parsed metadata after the update before restarting.
 
