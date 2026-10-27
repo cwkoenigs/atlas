@@ -6,7 +6,8 @@ requires-python = ">=3.10"
 dependencies = ["ds-cli-design", "markdown-it-py>=3"]
 
 [tool.uv.sources]
-ds-cli-design = { git = "https://github.com/cwkoenigs/ds-cli-design" }
+# the terminal design system, pinned to a release; move the tag to take a change to the look
+ds-cli-design = { git = "https://github.com/cwkoenigs/ds-cli-design", tag = "v1.1.0" }
 
 [project.scripts]
 atlas = "atlas_cli.cli:main"
