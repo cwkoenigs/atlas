@@ -7,11 +7,17 @@ from . import history as H
 from .storage import locked, atomic_write, fsync_dir, read_text
 from functools import wraps
 
+def load_config(root):
+    """Load portable defaults and optional machine-only overrides consistently."""
+    cfg = json.loads((root / "atlas.json").read_text())
+    local = root / "atlas.local.json"
+    if local.is_file():
+        cfg.update(json.loads(local.read_text()))
+    return cfg
+
+
 ROOT = pathlib.Path(os.environ.get("ATLAS_DIR", pathlib.Path.home() / "Developer" / "atlas")).expanduser()
-CFG = json.loads((ROOT / "atlas.json").read_text())
-_local_config = ROOT / "atlas.local.json"
-if _local_config.is_file():
-    CFG.update(json.loads(_local_config.read_text()))
+CFG = load_config(ROOT)
 STATE = ROOT / ".state" / "checks.json"
 FOLDERS = {"inbox": "Draft", "cards": "Active", "retired": "Retired"}
 FIELDS = ["id", "title", "kind", "host", "where", "what", "why", "source", "entry", "check",

@@ -17,7 +17,9 @@ The application repository must contain no inventory and must not assume the hom
 3. The shipped config initially enabled home dashboard export and home host labels. Neutral defaults made it pass.
 4. An ignored local config was initially not loaded. The optional overlay made it pass without changing the base file.
 
-All **123 repository tests pass**, including the four new regressions.
+5. A wiki request initially discarded local settings by reloading only the base file. A shared loader for initial import and every wiki snapshot made the host/port/check settings persist.
+
+All **124 repository tests pass**, including the five new regressions.
 
 ## Actual fresh-install acceptance
 

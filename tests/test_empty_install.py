@@ -51,3 +51,15 @@ class EmptyInstallTests(InventoryTest):
         self.assertEqual(cfg.get('html_out'), override['html_out'])
         self.assertEqual(cfg.get('template'), override['template'])
         self.assertEqual((self.root / 'atlas.json').read_bytes(), base)
+
+    def test_wiki_snapshot_preserves_machine_local_settings(self):
+        override = {'hosts': {'work': 'Work computer'}, 'stale_days': 7,
+                    'check_timeout': 2, 'wiki_port': 49199}
+        (self.root / 'atlas.local.json').write_text(json.dumps(override))
+        child = self.process('import json; from atlas_cli.wiki import render as R, server as S; '
+                             'snap=R.Snap(); print(json.dumps({"cfg":_A.CFG,"hosts":snap.hosts,"port":S.port()}))')
+        result = json.loads(self.finish(child))
+        for key, value in override.items():
+            self.assertEqual(result['cfg'].get(key), value, key)
+        self.assertEqual(result['hosts'], override['hosts'])
+        self.assertEqual(result['port'], override['wiki_port'])
