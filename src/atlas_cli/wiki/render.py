@@ -111,7 +111,7 @@ class Snap:
     """Everything one request needs, read fresh: the cards, check results, and how pages connect."""
 
     def __init__(self):
-        A.CFG = json.loads((A.ROOT / "atlas.json").read_text())
+        A.CFG = A.load_config(A.ROOT)
         A.TODAY = dt.date.today()
         self.cards = A.load()
         H.sync(A.ROOT, self.cards)

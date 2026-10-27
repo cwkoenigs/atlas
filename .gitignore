@@ -1,4 +1,9 @@
 .state/
+# User inventory and machine-specific integrations never ship with the app.
+/cards/
+/inbox/
+/retired/
+/atlas.local.json
 .DS_Store
 */personal/
 /ATLAS.md
