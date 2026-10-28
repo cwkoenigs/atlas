@@ -1,7 +1,7 @@
-"""Cards into ds_cli_design.browse: the filterable, framed picker from the design system."""
+"""Cards into canon_lib.picker.browse: the filterable, framed picker from the design system."""
 from __future__ import annotations
 
-from ds_cli_design import picker as P
+from canon_lib import picker as P
 
 from . import core as A
 

@@ -18,7 +18,7 @@ export PATH="$HOME/.local/bin:$PATH"
 atlas wiki
 ```
 
-Sign into an account with access to the private repositories. `uv` installs the terminal library, `ds-cli-design`, from GitHub automatically; it does not push anything to GitHub. No Hermes, dashboard-style checkout, Documents folder, or home-machine configuration is required.
+Sign into an account with access to the private repositories. `uv` installs the terminal library, canon-lib (from the canon repository), from GitHub automatically; it does not push anything to GitHub. No Hermes, dashboard-style checkout, Documents folder, or home-machine configuration is required.
 
 The wiki runs at **http://localhost:8788/**, bound to the local machine only. macOS and Linux have the locking primitives the app uses; native Windows is not supported.
 

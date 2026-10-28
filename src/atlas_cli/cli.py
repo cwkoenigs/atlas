@@ -1,4 +1,4 @@
-"""atlas: what runs where, and why. The terminal interface, built on ds-cli-design (the terminal design system).
+"""atlas: what runs where, and why. The terminal interface, built on canon-lib (the canon's terminal design system).
 
 Every line is built with ui_style (roles, glyphs, the 80-column grid); widgets are framed because a
 frame means "needs you". Cards are addressed by their number on the map or a word from their name.
@@ -15,12 +15,12 @@ import sys
 import textwrap
 import time
 
+from canon_lib import ui_style as S
+from canon_lib import widgets as W
+from canon_lib.ui_style import G, LABEL_W
 from rich.text import Text
 
 from . import core as A
-from ds_cli_design import ui_style as S
-from ds_cli_design import widgets as W
-from ds_cli_design.ui_style import G, LABEL_W
 
 from .picker import browse
 
