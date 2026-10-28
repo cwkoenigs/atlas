@@ -1,13 +1,14 @@
 [project]
 name = "atlas-map"
 version = "0.2.0"
-description = "What runs where, and why: one checked card per thing, built on ds-cli-design"
-requires-python = ">=3.10"
-dependencies = ["ds-cli-design", "markdown-it-py>=3"]
+description = "What runs where, and why: one checked card per thing, built on the canon's terminal design system"
+requires-python = ">=3.11"
+dependencies = ["canon-lib[tui]", "markdown-it-py>=3"]
 
 [tool.uv.sources]
-# the terminal design system, pinned to a release; move the tag to take a change to the look
-ds-cli-design = { git = "https://github.com/cwkoenigs/ds-cli-design", tag = "v1.1.0" }
+# the terminal design system is canon-lib's (ui_style, widgets, picker), pinned to a release; move the
+# tag to take a change to the look
+canon-lib = { git = "https://github.com/cwkoenigs/canon", tag = "canon-lib-v0.2.0", subdirectory = "lib" }
 
 [project.scripts]
 atlas = "atlas_cli.cli:main"
